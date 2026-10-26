@@ -5,6 +5,7 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 kotlin {
@@ -16,6 +17,7 @@ kotlin {
         commonMain.dependencies {
             implementation(compose.foundation)
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
         }
         androidMain.dependencies {
             implementation("androidx.activity:activity-compose:1.12.2")
@@ -25,8 +27,16 @@ kotlin {
             implementation("androidx.camera:camera-lifecycle:$camerax")
             implementation("androidx.camera:camera-view:$camerax")
         }
-        // OpenCV empacotado com as bibliotecas nativas de macOS/Linux/Windows (câmara web no desktop)
-        val desktopMain by getting { dependencies { implementation("org.openpnp:opencv:4.9.0-0") } }
+        // webrtc-java (JNI sobre libwebrtc): captura de mic/câmara/ecrã, PeerConnection e frames recebidos.
+        // O POM escolhe o nativo por perfil de SO, que o Gradle ignora: os classifiers vão explícitos.
+        val desktopMain by getting {
+            dependencies {
+                val webrtc = "0.20.0"
+                api("dev.onvoid.webrtc:webrtc-java:$webrtc")
+                listOf("macos-aarch64", "macos-x86_64", "linux-x86_64", "windows-x86_64")
+                    .forEach { runtimeOnly("dev.onvoid.webrtc:webrtc-java:$webrtc:$it") }
+            }
+        }
     }
 }
 

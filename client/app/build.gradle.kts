@@ -21,6 +21,7 @@ kotlin {
 compose.desktop {
     application {
         mainClass = "MainKt"
+        jvmArgs += "--enable-native-access=ALL-UNNAMED"  // webrtc-java carrega o libwebrtc por JNI
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Kurz Community"
@@ -55,11 +56,29 @@ tasks.register<JavaExec>("renderPane") {
     )
 }
 
+// Troca de microfone e câmara com tudo ligado (sem ecrã): ./gradlew :app:deviceCheck
+tasks.register<JavaExec>("deviceCheck") {
+    dependsOn("desktopMainClasses")
+    classpath(desktopMain.output.allOutputs, configurations.getByName("desktopRuntimeClasspath"))
+    mainClass = "DeviceCheckKt"
+}
+
 // Abre microfone, câmara e ecrã reais, imprime o que apanhou e grava um frame de cada: ./gradlew :app:captureCheck [-Pout=/tmp/captura]
 // No macOS a primeira execução pede permissões ao terminal (Microfone, Câmara, Gravação do ecrã).
 tasks.register<JavaExec>("captureCheck") {
     dependsOn("desktopMainClasses")
     classpath(desktopMain.output.allOutputs, configurations.getByName("desktopRuntimeClasspath"))
     mainClass = "CaptureCheckKt"
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
     args(project.findProperty("out") ?: "build/capture")
+}
+
+// Sala real ponta a ponta, sem janela nem permissões (vídeo/áudio sintéticos): ./gradlew :app:voiceCheck [-Pmanager=http://localhost:30080]
+// Precisa do manager e do SFU de experimentos/ a correr.
+tasks.register<JavaExec>("voiceCheck") {
+    dependsOn("desktopMainClasses")
+    classpath(desktopMain.output.allOutputs, configurations.getByName("desktopRuntimeClasspath"))
+    mainClass = "VoiceCheckKt"
+    jvmArgs("-Djava.awt.headless=true", "--enable-native-access=ALL-UNNAMED")
+    args(project.findProperty("manager") ?: "http://localhost:30080")
 }

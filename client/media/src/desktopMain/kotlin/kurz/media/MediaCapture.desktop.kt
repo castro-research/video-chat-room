@@ -12,26 +12,31 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import dev.onvoid.webrtc.PeerConnectionFactory
+import dev.onvoid.webrtc.media.FourCC
+import dev.onvoid.webrtc.media.MediaDevices
+import dev.onvoid.webrtc.media.MediaStreamTrack
+import dev.onvoid.webrtc.media.audio.AudioDeviceModule
+import dev.onvoid.webrtc.media.audio.AudioOptions
+import dev.onvoid.webrtc.media.video.VideoBufferConverter
+import dev.onvoid.webrtc.media.video.VideoCaptureCapability
+import dev.onvoid.webrtc.media.video.VideoDesktopSource
+import dev.onvoid.webrtc.media.video.VideoDeviceSource
+import dev.onvoid.webrtc.media.video.VideoFrame
+import dev.onvoid.webrtc.media.video.VideoTrack
+import dev.onvoid.webrtc.media.video.VideoTrackSink
+import dev.onvoid.webrtc.media.video.desktop.ScreenCapturer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.awt.GraphicsEnvironment
-import java.awt.RenderingHints
-import java.awt.Robot
-import java.awt.image.BufferedImage
-import java.awt.image.DataBufferByte
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import javax.sound.sampled.AudioFormat
-import javax.sound.sampled.AudioSystem
-import org.opencv.core.Mat
-import org.opencv.videoio.VideoCapture
+import org.jetbrains.skia.ColorAlphaType
+import org.jetbrains.skia.ColorType
+import org.jetbrains.skia.Image as SkImage
+import org.jetbrains.skia.ImageInfo
 
 @Composable
 actual fun rememberMediaCapture(): MediaCapture {
@@ -40,114 +45,216 @@ actual fun rememberMediaCapture(): MediaCapture {
     return c
 }
 
-// Sem API de permissões na JVM: no macOS a negação só se nota por silêncio (mic), imagem vazia (câmara) ou só o fundo do ecrã.
-private class DesktopCapture : MediaCapture() {
+/** O AudioDeviceModule é nosso (e não o interno da fábrica) para poder escolher o microfone com setRecordingDevice. */
+internal val adm by lazy { AudioDeviceModule() }
+
+/** Uma fábrica por processo: as tracks locais e a PeerConnection têm de vir da mesma. */
+internal val rtc by lazy { PeerConnectionFactory.builder().setAudioDeviceModule(adm).build() }
+
+/**
+ * Captura com webrtc-java: a mesma track alimenta a pré-visualização (um [FrameSink]) e a PeerConnection da sala
+ * (ver DesktopRooms), por isso a câmara abre uma vez só.
+ * Sem API de permissões na JVM: no macOS a negação nota-se por câmara sem imagens (aviso ao fim de 4 s) ou ecrã só com o fundo.
+ * ponytail: sem medidor do microfone (o áudio do AudioDeviceModule não passa por sinks Java); micLevel fica a 0.
+ */
+internal class DesktopCapture : MediaCapture() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var cameraFrame by mutableStateOf<ImageBitmap?>(null)
-    private var screenFrame by mutableStateOf<ImageBitmap?>(null)
-    private var micJob: Job? = null
-    private var cameraJob: Job? = null
-    private var screenJob: Job? = null
+    /** Tracks activas por fonte ("mic" | "camera" | "screen"); o id da track é o nome da fonte. */
+    val tracks = mutableMapOf<String, MediaStreamTrack>()
+    /** Avisado a cada track que liga (track) ou desliga (null). */
+    var onTrack: ((source: String, track: MediaStreamTrack?) -> Unit)? = null
+    private var cameraSource: VideoDeviceSource? = null
+    private var screenSource: VideoDesktopSource? = null
+    init { scope.launch { runCatching { rtc } } }  // aquece a fábrica (~0,5 s) antes do primeiro microfone ou da primeira sala
+    private val cameraFrames = FrameSink()
+    private val screenFrames = FrameSink(maxWidth = 960)
+
+    // ponytail: tracks e fontes paradas não são libertadas (a PeerConnection pode ainda estar a largá-las noutra thread);
+    // fica um objecto nativo pequeno por cada liga/desliga.
+    private fun put(source: String, track: MediaStreamTrack?) {
+        if (track == null) tracks.remove(source) else tracks[source] = track
+        onTrack?.invoke(source, track)
+    }
+
+    override fun refreshDevices() {
+        scope.launch {
+            micDevices = MediaDevices.getAudioCaptureDevices().sortedBy { it.name }.map { Device(it.descriptor, it.name) }
+            cameraDevices = videoDevices().map { Device(it.descriptor, it.name) }
+        }
+    }
+
+    // O dispositivo fica no AudioDeviceModule, por isso vale também para o próximo startMic. Ligado, pára e volta a
+    // arrancar a gravação à mão: a track e a publicação ficam como estão (sem renegociar).
+    override fun selectMic(id: String?) {
+        if (id == micDeviceId) return
+        val previous = micDeviceId
+        micDeviceId = id
+        scope.launch {
+            val dev = MediaDevices.getAudioCaptureDevices().firstOrNull { it.descriptor == id } ?: MediaDevices.getDefaultAudioCaptureDevice()
+            val live = mic == Capture.On
+            runCatching {
+                if (live) adm.stopRecording()
+                adm.setRecordingDevice(dev)
+                if (live) { adm.initRecording(); adm.startRecording() }
+            }.onFailure { micDeviceId = previous; notice = Msg.NO_MIC_SWITCH }
+        }
+    }
 
     override suspend fun startMic(): Boolean {
         if (mic != Capture.Off) return mic == Capture.On
         mic = Capture.Starting
-        val format = AudioFormat(16_000f, 16, 1, true, false)  // PCM com sinal, little-endian
-        val line = withContext(Dispatchers.IO) {
-            runCatching { AudioSystem.getTargetDataLine(format).also { it.open(format); it.start() } }.getOrNull()
+        val track = withContext(Dispatchers.IO) {
+            runCatching {
+                check(MediaDevices.getAudioCaptureDevices().isNotEmpty())
+                val opts = AudioOptions().apply { echoCancellation = true; noiseSuppression = true; autoGainControl = true; highpassFilter = true }
+                rtc.createAudioTrack("mic", rtc.createAudioSource(opts))
+            }.getOrNull()
         }
-        if (line == null) { mic = Capture.Off; notice = Msg.NO_MIC; return false }
-        micJob = scope.launch {
-            val bytes = ByteArray(1_600)  // 50 ms
-            val samples = ShortArray(bytes.size / 2)
-            try {
-                while (isActive) {
-                    val n = line.read(bytes, 0, bytes.size) / 2
-                    if (n <= 0) break
-                    ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(samples, 0, n)
-                    pushRms(rms16(samples, n))
-                }
-            } finally {
-                line.stop(); line.close()
-            }
-        }
+        if (track == null) { mic = Capture.Off; notice = Msg.NO_MIC; return false }
+        put("mic", track)
         mic = Capture.On
         return true
     }
 
-    override fun stopMic() { micJob?.cancel(); micJob = null; mic = Capture.Off; micLevel = 0f }
+    override fun stopMic() { if (mic == Capture.Off) return; put("mic", null); mic = Capture.Off }
 
     override suspend fun startCamera(): Boolean {
         if (camera != Capture.Off) return camera == Capture.On
         camera = Capture.Starting
-        val cap = withContext(Dispatchers.IO) {
-            runCatching { nu.pattern.OpenCV.loadLocally(); VideoCapture(0).takeIf { it.isOpened } }.getOrNull()
-        }
-        if (cap == null) { camera = Capture.Off; notice = Msg.NO_CAMERA_DEVICE; return false }
-        cameraJob = scope.launch {
-            val mat = Mat()
-            var failures = 0
-            try {
-                while (isActive) {
-                    if (cap.read(mat) && !mat.empty()) { failures = 0; cameraFrame = mat.toImage() }
-                    else if (++failures > 100) { camera = Capture.Off; notice = Msg.NO_CAMERA; break }  // ~3 s sem imagens
-                    else delay(30)
-                }
-            } finally {
-                mat.release(); cap.release()
-            }
-        }
+        val src = openCamera()
+        if (src == null) { camera = Capture.Off; notice = Msg.NO_CAMERA_DEVICE; return false }
+        cameraSource = src
+        val track = rtc.createVideoTrack("camera", src).also { it.addSink(cameraFrames) }
+        put("camera", track)
         camera = Capture.On
+        watchCamera(src)
         return true
     }
 
-    override fun stopCamera() { cameraJob?.cancel(); cameraJob = null; camera = Capture.Off; cameraFrame = null }
+    /** Ordem estável (o sistema devolve-as em ordem diferente de cada vez), para o padrão e o menu não mudarem sozinhos. */
+    private fun videoDevices() = MediaDevices.getVideoCaptureDevices().sortedBy { it.name }
+
+    private var cameraName = ""
+
+    /** Sem imagens ao fim de 4 s: câmara ocupada, tampa fechada ou permissão negada. Pára e diz para escolher outra. */
+    private fun watchCamera(src: VideoDeviceSource) {
+        scope.launch {
+            delay(4_000)
+            if (cameraSource === src && cameraFrames.image == null) {
+                stopCamera()
+                notice = "A câmara \"$cameraName\" não dá imagem (ocupada, tampa fechada ou sem permissão). Escolhe outra na seta ao lado do botão."
+            }
+        }
+    }
+
+    /** Abre a câmara escolhida (ou a primeira); null se não houver ou não abrir. */
+    private suspend fun openCamera() = withContext(Dispatchers.IO) {
+        val all = videoDevices()
+        val dev = all.firstOrNull { it.descriptor == cameraDeviceId } ?: all.firstOrNull() ?: return@withContext null
+        cameraName = dev.name
+        runCatching {
+            VideoDeviceSource().apply {
+                setVideoCaptureDevice(dev)
+                setVideoCaptureCapability(VideoCaptureCapability(1280, 720, 30))  // o módulo escolhe o formato mais próximo
+                start()
+            }
+        }.getOrNull()
+    }
+
+    // Troca em quente: abre a nova câmara antes de largar a velha e republica a track "camera" (o botão não passa por Off).
+    override fun selectCamera(id: String) {
+        if (id == cameraDeviceId) return
+        val previous = cameraDeviceId
+        cameraDeviceId = id
+        if (camera != Capture.On) return
+        scope.launch {
+            val src = openCamera()
+            if (src == null || camera != Capture.On) {  // não abriu, ou o utilizador desligou entretanto
+                src?.stop()
+                if (src == null) { cameraDeviceId = previous; notice = Msg.NO_CAMERA_DEVICE }
+                return@launch
+            }
+            val old = cameraSource
+            (tracks["camera"] as? VideoTrack)?.removeSink(cameraFrames)
+            cameraFrames.clear()  // não mostra o último frame da câmara antiga enquanto a nova não dá imagem
+            cameraSource = src
+            put("camera", rtc.createVideoTrack("camera", src).also { it.addSink(cameraFrames) })
+            old?.stop()
+            watchCamera(src)
+        }
+    }
+
+    override fun stopCamera() {
+        if (camera == Capture.Off) return
+        (tracks["camera"] as? VideoTrack)?.removeSink(cameraFrames)
+        put("camera", null)
+        cameraSource?.stop()
+        cameraSource = null; camera = Capture.Off; cameraFrames.clear()
+    }
 
     override suspend fun startScreen(): Boolean {
         if (screen != Capture.Off) return screen == Capture.On
-        val robot = if (GraphicsEnvironment.isHeadless()) null else runCatching { Robot() }.getOrNull()
-        if (robot == null) { notice = Msg.NO_SCREEN; return false }
         screen = Capture.Starting
-        screenJob = scope.launch {
-            val bounds = GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice.defaultConfiguration.bounds
-            while (isActive) {
-                screenFrame = robot.createScreenCapture(bounds).scaledToWidth(960).toComposeImageBitmap()
-                delay(120)  // ~8 fps
-            }
+        val src = withContext(Dispatchers.IO) {
+            runCatching {
+                // ponytail: sempre o primeiro ecrã; escolher ecrã/janela pediria um seletor
+                val id = ScreenCapturer().run { try { desktopSources.firstOrNull()?.id ?: 0L } finally { dispose() } }
+                VideoDesktopSource().apply { setSourceId(id, false); setFrameRate(15); setMaxFrameSize(1920, 1080); start() }
+            }.getOrNull()
         }
+        if (src == null) { screen = Capture.Off; notice = Msg.NO_SCREEN; return false }
+        screenSource = src
+        put("screen", rtc.createVideoTrack("screen", src).also { it.addSink(screenFrames) })
         screen = Capture.On
         return true
     }
 
-    override fun stopScreen() { screenJob?.cancel(); screenJob = null; screen = Capture.Off; screenFrame = null }
+    override fun stopScreen() {
+        if (screen == Capture.Off) return
+        (tracks["screen"] as? VideoTrack)?.removeSink(screenFrames)
+        put("screen", null)
+        screenSource?.stop()
+        screenSource = null; screen = Capture.Off; screenFrames.clear()
+    }
 
     @Composable
     override fun CameraPreview(modifier: Modifier) {
         // espelhada, como é habitual na pré-visualização própria
-        cameraFrame?.let { Image(it, null, modifier.graphicsLayer { scaleX = -1f }, contentScale = ContentScale.Crop) }
+        cameraFrames.image?.let { Image(it, null, modifier.graphicsLayer { scaleX = -1f }, contentScale = ContentScale.Crop) }
     }
 
     @Composable
     override fun ScreenPreview(modifier: Modifier) {
-        screenFrame?.let { Image(it, null, modifier, contentScale = ContentScale.Fit) }
+        screenFrames.image?.let { Image(it, null, modifier, contentScale = ContentScale.Fit) }
     }
 
-    override fun release() { stopMic(); stopCamera(); stopScreen(); scope.cancel() }
+    override fun release() { onTrack = null; stopMic(); stopCamera(); stopScreen(); scope.cancel() }
 }
 
-private fun Mat.toImage(): ImageBitmap {
-    val img = BufferedImage(cols(), rows(), BufferedImage.TYPE_3BYTE_BGR)  // o OpenCV entrega BGR, 8 bits
-    get(0, 0, (img.raster.dataBuffer as DataBufferByte).data)
-    return img.toComposeImageBitmap()
-}
+/**
+ * Guarda o último frame de uma VideoTrack como ImageBitmap para a UI, com teto de ~15 fps e [maxWidth] px de largura
+ * (I420 → BGRA no libyuv; o resto do frame nem é convertido).
+ */
+class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
+    var image by mutableStateOf<ImageBitmap?>(null); private set
+    /** Frames recebidos (incluindo os que o teto de fps descarta). */
+    @Volatile var count = 0; private set
+    @Volatile private var last = 0L
 
-private fun BufferedImage.scaledToWidth(w: Int): BufferedImage {
-    if (width <= w) return this
-    val out = BufferedImage(w, height * w / width, BufferedImage.TYPE_INT_RGB)
-    out.createGraphics().apply {
-        setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-        drawImage(this@scaledToWidth, 0, 0, out.width, out.height, null)
-        dispose()
+    override fun onVideoFrame(frame: VideoFrame) {
+        count++
+        val now = System.nanoTime()
+        if (now - last < 66_000_000) return
+        last = now
+        val b = frame.buffer
+        val w = minOf(b.width, maxWidth) and 1.inv()
+        val h = (b.height.toLong() * w / b.width).toInt() and 1.inv()
+        if (w <= 0 || h <= 0) return
+        val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)  // cópia em memória Java: não tem release
+        val px = ByteArray(w * h * 4)
+        VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
+        image = SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
     }
-    return out
+
+    fun clear() { image = null }
 }

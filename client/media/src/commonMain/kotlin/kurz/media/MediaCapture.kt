@@ -13,6 +13,9 @@ import kotlin.math.sqrt
 /** Estado de uma fonte. Se o pedido falhar volta a [Off] e a razão fica em [MediaCapture.notice]. */
 enum class Capture { Off, Starting, On }
 
+/** Um microfone ou uma câmara. [id] é o descritor do sistema; [name] o que se mostra. */
+data class Device(val id: String, val name: String)
+
 /**
  * Captura local de microfone, câmara e ecrã: permissões, arranque/paragem, pré-visualização e nível do microfone.
  * Não envia nada para lado nenhum — é o ponto de ligação ao LiveKit (que fará a captura por si, ver AppState.joinVoice).
@@ -31,6 +34,20 @@ abstract class MediaCapture {
 
     /** Chamado quando a partilha de ecrã termina por iniciativa do sistema (ex.: "Parar partilha" na barra de estado). */
     var onScreenStopped: (() -> Unit)? = null
+
+    /** Dispositivos de entrada ([refreshDevices] actualiza). Vazios onde a plataforma não deixa escolher: a UI esconde o seletor. */
+    var micDevices by mutableStateOf<List<Device>>(emptyList()); protected set
+    var cameraDevices by mutableStateOf<List<Device>>(emptyList()); protected set
+
+    /** Dispositivo escolhido; null = o padrão do sistema (na câmara, a primeira). */
+    var micDeviceId by mutableStateOf<String?>(null); protected set
+    var cameraDeviceId by mutableStateOf<String?>(null); protected set
+
+    open fun refreshDevices() {}
+
+    /** Muda de dispositivo; com a fonte ligada troca em quente, sem desligar o botão. */
+    open fun selectMic(id: String?) {}
+    open fun selectCamera(id: String) {}
 
     /** Cada start devolve true se a fonte ficou activa; pede a permissão se for preciso. */
     abstract suspend fun startMic(): Boolean
@@ -60,6 +77,7 @@ expect fun rememberMediaCapture(): MediaCapture
 internal object Msg {
     const val NO_MIC = "Sem acesso ao microfone. Ativa-o nas definições do sistema."
     const val NO_MIC_SIMULATOR = "O microfone está desligado no simulador iOS (o áudio do simulador pode bloquear a app)."
+    const val NO_MIC_SWITCH = "Não foi possível mudar de microfone."
     const val NO_CAMERA = "Sem acesso à câmara. Ativa-a nas definições do sistema."
     const val NO_CAMERA_DEVICE = "Não foi encontrada nenhuma câmara."
     const val NO_SCREEN = "Não foi possível partilhar o ecrã neste dispositivo."

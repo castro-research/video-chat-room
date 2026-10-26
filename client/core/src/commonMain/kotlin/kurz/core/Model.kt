@@ -3,7 +3,7 @@ package kurz.core
 import androidx.compose.runtime.*
 
 // Modelo + estado com dados de exemplo da referência. Dono: fundação — agentes não editam.
-// Ponto de ligação ao LiveKit: joinVoice / leaveVoice / muted / camOn / sharing.
+// Canais de voz de exemplo: joinVoice / leaveVoice. Salas reais (manager + SFU): joinRoom / roomId, mídia em kurz.media.RoomClient.
 
 enum class Status { Online, Idle, Offline }
 enum class ChannelKind { Text, Voice }
@@ -32,12 +32,15 @@ data class Message(
     val photos: List<Photo> = emptyList(),
 )
 
+private val guestNames = listOf("Lontra", "Raposa", "Coruja", "Tucano", "Capivara", "Gaivota", "Tatu", "Jaguar", "Arara", "Sagui")
+
 private val lake = Photo(0xFF3F8FB5, 0xFFF0A58C, 0xFF1F4A3C, 2.4f)
 private val sunset = Photo(0xFF6C7FC9, 0xFFF08F8F, 0xFF3A3F57, 1.0f)
 
 class AppState(dark: Boolean = false) {
     // --- pessoas ---
-    val me = User("nainesh", "Nainesh Selarka", Status.Online, "Designing on Figma! ❤", "ADMIN", 215f)
+    // Sem login: nome aleatório, só em memória (muda a cada arranque). ponytail: perfil e persistência quando houver contas.
+    val me = User("me", "${guestNames.random()} ${(10..99).random()}", Status.Online, "Online", hue = (0..359).random().toFloat())
     private val krishna = User("krishna", "Krishna", Status.Online, "Coding on VS Code.", "ADMIN", 150f)
     private val radha = User("radha", "Radha", Status.Offline, "Offline", "ADMIN", 330f)
     private val vrinda = User("vrinda", "Vrinda", Status.Online, "Online", "MOD", 20f)
@@ -85,20 +88,26 @@ class AppState(dark: Boolean = false) {
     var textChannelId by mutableStateOf("general-text")  // canal de texto aberto
     var voiceChannelId by mutableStateOf<String?>(null)  // sala de voz ligada
     var viewVoice by mutableStateOf(false)               // área principal mostra a sala de voz
-    val showVoice get() = voiceChannelId != null && viewVoice
+    val showVoice get() = inVoice && viewVoice
     val textChannel get() = channel(textChannelId)
     val voiceChannel get() = voiceChannelId?.let { channel(it) }
     // Em ecrãs estreitos (telemóvel) mostra-se um painel de cada vez: false = lista de canais, true = chat/sala.
     var contentOpen by mutableStateOf(false)
     fun closeContent() { contentOpen = false }
     fun openText(id: String) { textChannelId = id; viewVoice = false; contentOpen = true }
-    fun joinVoice(id: String) { voiceChannelId = id; viewVoice = true; contentOpen = true }   // TODO: ligar ao LiveKit
+    fun joinVoice(id: String) { roomId = null; voiceChannelId = id; viewVoice = true; contentOpen = true }   // exemplo: sem mídia remota
     fun openVoiceRoom() { viewVoice = true; contentOpen = true }
     fun leaveVoice() {
         val viewing = showVoice
-        voiceChannelId = null; viewVoice = false; muted = false; camOn = false; sharing = false
+        voiceChannelId = null; roomId = null; viewVoice = false; muted = false; camOn = false; sharing = false
         if (viewing) contentOpen = false
     }
+
+    // --- salas reais: o manager dá a sala, o SFU a mídia (kurz.media.RoomClient faz a ligação) ---
+    var managerUrl by mutableStateOf("http://localhost:30080")
+    var roomId by mutableStateOf<String?>(null)          // sala real ligada; exclui um canal de voz de exemplo
+    val inVoice get() = voiceChannelId != null || roomId != null
+    fun joinRoom(id: String) { voiceChannelId = null; roomId = id; viewVoice = true; contentOpen = true }
 
     private val voiceUsers = mapOf("general-talk" to listOf(govind, keshav), "dev-discussions" to listOf(krishna), "discussions" to listOf(vrinda))
     /** Quem está na sala de voz [id]; inclui o próprio utilizador se estiver ligado. */

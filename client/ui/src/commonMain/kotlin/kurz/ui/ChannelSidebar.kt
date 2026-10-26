@@ -1,10 +1,12 @@
 package kurz.ui
 
 import kurz.core.*
+import kurz.media.Room
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
@@ -13,6 +15,22 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextStyle
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -33,25 +51,15 @@ fun ChannelSidebar(s: AppState, modifier: Modifier = Modifier) {
             Text(s.server.name, Modifier.weight(1f), color = p.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             IconBtn(if (s.dark) Icons.Outlined.LightMode else Icons.Outlined.DarkMode, "Alternar tema", { s.dark = !s.dark }, size = 32.dp, iconSize = 18.dp)
         }
+        val rooms = LocalRooms.current
+        rooms.notice?.let { Notice(it) { rooms.notice = null } }
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp)) {
-            s.categories.forEach { cat ->
-                val closed = cat.name in s.collapsed
-                item(cat.name) {
-                    Row(Modifier.padding(top = 16.dp, bottom = 4.dp).rowClick { s.toggleCategory(cat.name) }.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Text(cat.name, color = p.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Icon(if (closed) Icons.AutoMirrored.Outlined.KeyboardArrowRight else Icons.Outlined.KeyboardArrowDown, null, Modifier.size(16.dp), tint = p.textMuted)
-                    }
-                }
-                if (!closed) cat.channels.forEach { ch ->
-                    item(ch.id) { ChannelRow(s, ch) }
-                }
-            }
+            item("rooms") { RoomsSection(s) }  // só as salas do manager (o seed é dele); os canais de exemplo do Model não aparecem
         }
-        s.voiceChannel?.let { vc ->
+        (s.voiceChannel?.name ?: s.roomId?.let { shownRoom(s, rooms)?.name ?: it })?.let { name ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp).background(p.input, RoundedCornerShape(8.dp)).padding(10.dp),
                 Arrangement.spacedBy(8.dp)) {
-                Text("Voz ligada · ${vc.name}", color = p.online, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("Voz ligada · $name", color = p.online, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) {
                     if (!s.showVoice || compact) Text("Ver sala", Modifier.weight(1f).rowClick(shape = RoundedCornerShape(6.dp)) { s.openVoiceRoom() }.padding(vertical = 6.dp),
                         color = p.text, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -80,24 +88,81 @@ private fun heart(t: String, c: Color): AnnotatedString = buildAnnotatedString {
     t.forEach { if (it == '❤') withStyle(SpanStyle(color = c)) { append(it) } else append(it) }
 }
 
+/** Salas reais do manager: URL, lista (actualizada a cada 3 s), criar e entrar por código. */
 @Composable
-private fun ChannelRow(s: AppState, ch: Channel) {
-    val voice = ch.kind == ChannelKind.Voice
-    val connected = voice && s.voiceChannelId == ch.id
-    val selected = if (voice) connected else !s.showVoice && s.textChannelId == ch.id
-    Column(Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth().height(rowHeight).rowClick(selected) { if (voice) s.joinVoice(ch.id) else s.openText(ch.id) }.padding(horizontal = 8.dp),
-            Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
-            val c = if (selected || connected) p.text else p.textMuted
-            Icon(if (voice) Icons.AutoMirrored.Outlined.VolumeUp else Icons.Outlined.Tag, null, Modifier.size(16.dp), tint = c)
-            Text(ch.name, color = c, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
-            if (ch.locked) Icon(Icons.Outlined.Lock, null, Modifier.size(12.dp), tint = p.textFaint)
+private fun RoomsSection(s: AppState) {
+    val r = LocalRooms.current
+    val scope = rememberCoroutineScope()
+    var naming by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    LaunchedEffect(s.managerUrl) {
+        delay(300)  // espera que se acabe de escrever a URL
+        while (true) { r.list(s.managerUrl); delay(3_000) }
+    }
+    fun create() {
+        val name = newName.trim().ifEmpty { return }
+        scope.launch { r.create(s.managerUrl, name)?.let { naming = false; newName = ""; s.joinRoom(it.id) } }
+    }
+    fun enter() { code.trim().ifEmpty { return }.let { code = ""; s.joinRoom(it) } }
+    Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp)) {
+        Text("Salas", Modifier.padding(start = 8.dp, top = 8.dp), color = p.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Field(s.managerUrl, "URL do manager") { s.managerUrl = it }
+        r.listError?.let { Text(it, Modifier.padding(horizontal = 8.dp), color = p.danger, fontSize = 11.sp) }
+        r.rooms.forEach { RoomRow(s, it) }
+        if (naming) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Field(newName, "Nome da sala", Modifier.weight(1f), onEnter = ::create) { newName = it }
+            SmallButton("Criar", ::create)
+        } else SmallButton("Criar sala") { naming = true }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Field(code, "Código", Modifier.weight(1f), onEnter = ::enter) { code = it }
+            SmallButton("Entrar", ::enter)
         }
-        if (connected) s.voiceParticipants(ch.id).forEach { u ->
+    }
+}
+
+@Composable
+private fun RoomRow(s: AppState, room: Room) {
+    val rooms = LocalRooms.current
+    val connected = s.roomId == room.id
+    val people = peopleIn(room, s, rooms)  // otimista: o próprio entra já na sala clicada e sai já da anterior
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().height(rowHeight).rowClick(connected) { if (connected) s.openVoiceRoom() else s.joinRoom(room.id) }.padding(horizontal = 8.dp),
+            Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+            val c = if (connected) p.text else p.textMuted
+            Icon(Icons.AutoMirrored.Outlined.VolumeUp, null, Modifier.size(16.dp), tint = c)
+            Text(room.name, color = c, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
+            Text("${room.id} · ${people.size}", color = p.textFaint, fontSize = 11.sp, maxLines = 1)
+        }
+        people.forEach { pt ->
+            val u = pt.user(s.me, rooms.userId)
             Row(Modifier.fillMaxWidth().height(28.dp).padding(start = 32.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
                 Avatar(u, 20.dp)
-                Text(u.name, color = p.textMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(u.name, color = p.textMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, false))
+                if (!pt.mic) Icon(Icons.Outlined.MicOff, null, Modifier.size(12.dp), tint = p.textFaint)
+                if (pt.camera) Icon(Icons.Outlined.Videocam, null, Modifier.size(12.dp), tint = p.textFaint)
+                if (pt.screen) Icon(Icons.Outlined.ScreenShare, null, Modifier.size(12.dp), tint = p.textFaint)
             }
         }
     }
 }
+
+@Composable
+private fun Field(value: String, hint: String, modifier: Modifier = Modifier.fillMaxWidth(), onEnter: () -> Unit = {}, onChange: (String) -> Unit) {
+    Box(modifier.height(30.dp).clip(RoundedCornerShape(6.dp)).background(p.input).padding(horizontal = 8.dp), Alignment.CenterStart) {
+        if (value.isEmpty()) Text(hint, color = p.textFaint, fontSize = 12.sp)
+        BasicTextField(
+            value, onChange, Modifier.fillMaxWidth().onPreviewKeyEvent {
+                val enter = it.key == Key.Enter || it.key == Key.NumPadEnter
+                if (enter && it.type == KeyEventType.KeyDown) onEnter()
+                enter
+            },
+            singleLine = true, textStyle = TextStyle(color = p.text, fontSize = 12.sp), cursorBrush = SolidColor(p.accent),
+        )
+    }
+}
+
+@Composable
+private fun SmallButton(label: String, onClick: () -> Unit) =
+    Text(label, Modifier.height(30.dp).rowClick(shape = RoundedCornerShape(6.dp), onClick = onClick).background(p.input).padding(horizontal = 10.dp, vertical = 7.dp),
+        color = p.text, fontSize = 12.sp, maxLines = 1)
