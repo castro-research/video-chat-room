@@ -307,7 +307,6 @@ internal class DesktopCapture : MediaCapture() {
  * Guarda o último frame de uma VideoTrack como ImageBitmap para a UI, com teto de ~15 fps e [maxWidth] px de largura
  * (I420 → BGRA no libyuv; o resto do frame nem é convertido).
  */
-@Volatile private var tmpLast = ""  // TEMP
 class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
     var image by mutableStateOf<ImageBitmap?>(null); private set
     /** Frames recebidos (incluindo os que o teto de fps descarta). */
@@ -316,7 +315,6 @@ class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
 
     override fun onVideoFrame(frame: VideoFrame) {
         count++
-        if (maxWidth == 960) { val z = "${frame.buffer.width}x${frame.buffer.height}"; if (z != tmpLast) { tmpLast = z; println("TMPSZ $z") } }  // TEMP
         val now = System.nanoTime()
         if (now - last < 66_000_000) return
         last = now
