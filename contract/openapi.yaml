@@ -1,0 +1,874 @@
+openapi: 3.0.3
+info:
+  title: Kurz server contract
+  version: 0.1.0
+  description: |
+    The contract every Kurz server implements, whatever language it is written in. One server = one community (tenant).
+    The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
+
+    REST is described by `paths`. The two WebSocket channels (`/v1/gateway`, `/v1/media`) are described by their message
+    schemas under `components.schemas` (`Gateway*`, `Media*`); the flows are in README.md.
+
+    Conventions
+    - Every path is relative to the base URL the user typed (`https://tenant.example.com`, or with a path prefix).
+    - Ids are opaque strings. Timestamps are RFC 3339 UTC.
+    - Errors are `ApiError`. `code` is an open set: clients treat unknown codes as a generic failure of that status.
+      Known codes: unauthorized, token_expired, forbidden, not_found, validation, username_taken, registration_closed,
+      invalid_invite, rate_limited, not_supported.
+    - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
+    - 429 carries `Retry-After` (seconds).
+    - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
+servers:
+  - url: '{base}'
+    description: The base URL typed into the client.
+    variables:
+      base:
+        default: http://localhost:8080
+security:
+  - bearer: []
+
+paths:
+  /.well-known/kurz:
+    get:
+      operationId: getServerInfo
+      tags: [discovery]
+      security: []
+      summary: Identify the server, its contract version and what it supports. Public.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerInfo' }
+
+  /v1/auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      security: []
+      summary: Create an account (when `registration` is open, or invite with a valid `inviteCode`)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: username_taken
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
+        '422': { $ref: '#/components/responses/Validation' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      security: []
+      summary: Exchange username and password for a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Validation' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/auth/refresh:
+    post:
+      operationId: refresh
+      tags: [auth]
+      security: []
+      summary: Rotate the refresh token and get a new access token. The old refresh token stops working.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      security: []
+      summary: Revoke a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '204': { description: Revoked }
+
+  /v1/me:
+    get:
+      operationId: getMe
+      tags: [me]
+      summary: The authenticated user
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      operationId: updateMe
+      tags: [me]
+      summary: Change own display name, custom status or avatar hue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMeRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/members:
+    get:
+      operationId: listMembers
+      tags: [members]
+      summary: Members sorted by name then id, with the presence status they have right now
+      parameters:
+        - name: role
+          in: query
+          schema: { $ref: '#/components/schemas/Role' }
+        - name: q
+          in: query
+          description: Case-insensitive substring of name or username.
+          schema: { type: string, maxLength: 64 }
+        - name: after
+          in: query
+          description: The `next` of the previous page.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemberPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/channels:
+    get:
+      operationId: listChannels
+      tags: [channels]
+      summary: Categories with their channels, in display order. Voice channels carry who is connected right now.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChannelList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/channels/{channelId}/messages:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      operationId: listMessages
+      tags: [messages]
+      summary: One page of history, oldest to newest
+      description: The page is the newest `limit` messages older than `before` (or the newest overall when `before` is absent).
+      parameters:
+        - name: before
+          in: query
+          description: A message id; only older messages are returned.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MessagePage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: sendMessage
+      tags: [messages]
+      summary: Post a message. It is also pushed to everyone (sender included) as `message.create`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SendMessageRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/channels/{channelId}/read:
+    post:
+      operationId: markRead
+      tags: [messages]
+      summary: Mark the channel as read up to a message. Resets `unread` for the caller.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReadRequest' }
+      responses:
+        '204': { description: Marked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/uploads:
+    post:
+      operationId: upload
+      tags: [messages]
+      summary: Upload a file to attach to a message (capability `attachments`)
+      description: The returned id goes in `SendMessageRequest.attachmentIds`. Servers may discard uploads never attached.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attachment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Validation' }
+        '501': { description: not_supported }
+
+  /v1/channels/{channelId}/voice/join:
+    post:
+      operationId: joinVoice
+      tags: [voice]
+      summary: Get what is needed to connect to a voice channel's media. Leaves any other voice channel first.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceSession' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+        '501': { description: not_supported }
+
+  /v1/channels/{channelId}/voice/leave:
+    post:
+      operationId: leaveVoice
+      tags: [voice]
+      summary: Leave the voice channel. Closing the media socket has the same effect.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '204': { description: Left }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/gateway:
+    get:
+      operationId: gateway
+      tags: [realtime]
+      security: []
+      summary: WebSocket for realtime events (no token in the URL; the first frame authenticates)
+      description: |
+        Upgrade to WebSocket. Frames are JSON `{ "op": string, "d": object }`.
+        Client to server: `GatewayClientMessage`. Server to client: `GatewayServerMessage`.
+        The first client frame must be `identify` within 10 s, else the server closes with 4001.
+        Close 4001 = bad or expired token: refresh the access token and reconnect once.
+        Liveness is WebSocket ping/pong: the server pings at least every 30 s and the client reconnects after 60 s of silence.
+        There is no resume. After reconnecting the client refetches what it missed over REST.
+      responses:
+        '101': { description: Switching Protocols }
+
+  /v1/media:
+    get:
+      operationId: media
+      tags: [realtime]
+      security: []
+      summary: WebSocket for WebRTC signaling with the SFU. Default value of `VoiceSession.media.url`; may be another host.
+      description: |
+        Frames are JSON `{ "op": string, "d": object }`. Client to server: `MediaClientMessage`. Server to client: `MediaServerMessage`.
+        The first client frame must be `join` within 10 s, else the server closes with 4001.
+        Closing the socket leaves the voice channel.
+      responses:
+        '101': { description: Switching Protocols }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: The `accessToken` of a `Session`. Opaque to the client.
+
+  parameters:
+    ChannelId:
+      name: channelId
+      in: path
+      required: true
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+
+  responses:
+    Unauthorized:
+      description: unauthorized or token_expired
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Forbidden:
+      description: forbidden (or registration_closed / invalid_invite on register)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: not_found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Validation:
+      description: validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: rate_limited
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+
+  schemas:
+    # ---------- shared ----------
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string, description: 'Human readable, not for matching.' }
+
+    Role:
+      type: string
+      enum: [admin, mod, member]
+
+    Status:
+      type: string
+      description: offline is derived by the server when the user has no open gateway connection.
+      enum: [online, idle, offline]
+
+    ServerInfo:
+      type: object
+      required: [contract, name, registration, capabilities]
+      properties:
+        contract:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+$'
+          description: major.minor of this contract. A client refuses a server whose major differs.
+          example: '0.1'
+        name: { type: string }
+        hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
+        iconUrl: { type: string, format: uri }
+        registration:
+          type: string
+          enum: [open, invite, closed]
+        capabilities:
+          type: array
+          description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses.'
+          items:
+            type: string
+            enum: [text, voice, video, screenshare, attachments]
+
+    User:
+      type: object
+      required: [id, username, name, status, role]
+      properties:
+        id: { type: string }
+        username: { type: string, description: 'Unique, lowercase [a-z0-9_]{3,32}.' }
+        name: { type: string, minLength: 1, maxLength: 64, description: Display name. }
+        status: { $ref: '#/components/schemas/Status' }
+        subtitle: { type: string, maxLength: 128, description: Custom status line. }
+        role: { $ref: '#/components/schemas/Role' }
+        hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated avatar when there is no `avatarUrl`. }
+        avatarUrl: { type: string, format: uri }
+
+    # ---------- auth / me ----------
+    RegisterRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string, minLength: 8, maxLength: 128 }
+        name: { type: string, minLength: 1, maxLength: 64, description: Defaults to the username. }
+        inviteCode: { type: string, description: Required when `registration` is invite. }
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+
+    Session:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Seconds until `accessToken` expires. }
+        user: { $ref: '#/components/schemas/User' }
+
+    UpdateMeRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        subtitle: { type: string, maxLength: 128, description: Empty string clears it. }
+        hue: { type: number, minimum: 0, maximum: 360 }
+
+    MemberPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/User' }
+        total: { type: integer, description: 'Members matching the filters, across all pages.' }
+        next: { type: string, description: Absent on the last page. }
+
+    # ---------- channels ----------
+    ChannelKind:
+      type: string
+      enum: [text, voice]
+
+    Channel:
+      type: object
+      required: [id, name, kind, locked]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { $ref: '#/components/schemas/ChannelKind' }
+        locked:
+          type: boolean
+          description: The caller may see it but not use it. Reading, posting and joining answer 403.
+        unread: { type: integer, minimum: 0, description: 'Text channels: messages after the caller''s read mark.' }
+        participants:
+          type: array
+          description: Voice channels only; who is connected right now.
+          items: { $ref: '#/components/schemas/VoiceParticipant' }
+
+    Category:
+      type: object
+      required: [id, name, channels]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        channels:
+          type: array
+          items: { $ref: '#/components/schemas/Channel' }
+
+    ChannelList:
+      type: object
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/Category' }
+
+    # ---------- messages ----------
+    Attachment:
+      type: object
+      required: [id, url, contentType]
+      properties:
+        id: { type: string }
+        url: { type: string, format: uri }
+        contentType: { type: string }
+        name: { type: string }
+        size: { type: integer }
+        width: { type: integer, description: 'Pixels, for images and video.' }
+        height: { type: integer }
+
+    Message:
+      type: object
+      required: [id, channelId, author, createdAt, text, attachments]
+      properties:
+        id: { type: string }
+        channelId: { type: string }
+        author: { $ref: '#/components/schemas/User' }
+        createdAt: { type: string, format: date-time }
+        text: { type: string }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/Attachment' }
+        nonce: { type: string, description: "Echo of the sender's nonce, so the sender can match it with its optimistic copy. Only present on the sender's own message." }
+
+    MessagePage:
+      type: object
+      required: [items, hasMore]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Message' }
+        hasMore: { type: boolean, description: There are older messages than the first item. }
+
+    SendMessageRequest:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, maxLength: 4000, description: May be empty only when `attachmentIds` is not. }
+        nonce: { type: string, maxLength: 64 }
+        attachmentIds:
+          type: array
+          items: { type: string }
+
+    ReadRequest:
+      type: object
+      required: [messageId]
+      properties:
+        messageId: { type: string }
+
+    # ---------- voice ----------
+    VoiceParticipant:
+      type: object
+      required: [user, muted, camOn, sharing]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        muted: { type: boolean }
+        camOn: { type: boolean }
+        sharing: { type: boolean, description: Screen share on. }
+
+    IceServer:
+      type: object
+      required: [urls]
+      description: Same shape as WebRTC's RTCIceServer. TURN credentials should be short-lived.
+      properties:
+        urls:
+          type: array
+          items: { type: string }
+        username: { type: string }
+        credential: { type: string }
+
+    VoiceSession:
+      type: object
+      required: [media, iceServers, participants]
+      properties:
+        media:
+          type: object
+          required: [url, token]
+          properties:
+            url: { type: string, format: uri, description: A ws:// or wss:// URL of the signaling socket. }
+            token: { type: string, description: 'Short-lived, single use; what the client sends in the media `join` frame.' }
+        iceServers:
+          type: array
+          items: { $ref: '#/components/schemas/IceServer' }
+        participants:
+          type: array
+          items: { $ref: '#/components/schemas/VoiceParticipant' }
+
+    # ---------- gateway frames ----------
+    GatewayClientMessage:
+      oneOf:
+        - $ref: '#/components/schemas/IdentifyOp'
+        - $ref: '#/components/schemas/PresenceSetOp'
+        - $ref: '#/components/schemas/VoiceStateSetOp'
+      discriminator:
+        propertyName: op
+        mapping:
+          identify: '#/components/schemas/IdentifyOp'
+          presence.set: '#/components/schemas/PresenceSetOp'
+          voice.state.set: '#/components/schemas/VoiceStateSetOp'
+
+    IdentifyOp:
+      type: object
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [identify] }
+        d:
+          type: object
+          required: [token]
+          properties:
+            token: { type: string, description: The access token. }
+
+    PresenceSetOp:
+      type: object
+      description: Sent when the user goes idle or comes back. Connecting implies online.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [presence.set] }
+        d:
+          type: object
+          required: [status]
+          properties:
+            status: { type: string, enum: [online, idle] }
+
+    VoiceStateSetOp:
+      type: object
+      description: The caller's own mute, camera and screen-share state while connected to a voice channel. The server rebroadcasts it as `voice.state`.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [voice.state.set] }
+        d:
+          type: object
+          required: [muted, camOn, sharing]
+          properties:
+            muted: { type: boolean }
+            camOn: { type: boolean }
+            sharing: { type: boolean }
+
+    GatewayServerMessage:
+      oneOf:
+        - $ref: '#/components/schemas/ReadyEvent'
+        - $ref: '#/components/schemas/MessageCreateEvent'
+        - $ref: '#/components/schemas/MemberUpdateEvent'
+        - $ref: '#/components/schemas/MemberRemoveEvent'
+        - $ref: '#/components/schemas/VoiceStateEvent'
+        - $ref: '#/components/schemas/VoiceSpeakingEvent'
+      discriminator:
+        propertyName: op
+        mapping:
+          ready: '#/components/schemas/ReadyEvent'
+          message.create: '#/components/schemas/MessageCreateEvent'
+          member.update: '#/components/schemas/MemberUpdateEvent'
+          member.remove: '#/components/schemas/MemberRemoveEvent'
+          voice.state: '#/components/schemas/VoiceStateEvent'
+          voice.speaking: '#/components/schemas/VoiceSpeakingEvent'
+
+    ReadyEvent:
+      type: object
+      description: Reply to a valid `identify`. Events start flowing after it.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [ready] }
+        d:
+          type: object
+          required: [user]
+          properties:
+            user: { $ref: '#/components/schemas/User' }
+
+    MessageCreateEvent:
+      type: object
+      description: A message in a channel the caller can read. The sender receives it too.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [message.create] }
+        d:
+          type: object
+          required: [message]
+          properties:
+            message: { $ref: '#/components/schemas/Message' }
+
+    MemberUpdateEvent:
+      type: object
+      description: A member joined, or changed name, subtitle, role, avatar or status. Upsert by `user.id`.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [member.update] }
+        d:
+          type: object
+          required: [user]
+          properties:
+            user: { $ref: '#/components/schemas/User' }
+
+    MemberRemoveEvent:
+      type: object
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [member.remove] }
+        d:
+          type: object
+          required: [userId]
+          properties:
+            userId: { type: string }
+
+    VoiceStateEvent:
+      type: object
+      description: Someone joined or left a voice channel (`connected`), or changed mute, camera or screen share.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [voice.state] }
+        d:
+          type: object
+          required: [channelId, connected, participant]
+          properties:
+            channelId: { type: string }
+            connected: { type: boolean }
+            participant: { $ref: '#/components/schemas/VoiceParticipant' }
+
+    VoiceSpeakingEvent:
+      type: object
+      description: Optional. Sent when someone starts or stops talking, for the speaking highlight. A client that never gets it just shows no highlight.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [voice.speaking] }
+        d:
+          type: object
+          required: [channelId, userId, speaking]
+          properties:
+            channelId: { type: string }
+            userId: { type: string }
+            speaking: { type: boolean }
+
+    # ---------- media frames ----------
+    MediaClientMessage:
+      oneOf:
+        - $ref: '#/components/schemas/MediaJoin'
+        - $ref: '#/components/schemas/MediaPublish'
+        - $ref: '#/components/schemas/MediaOffer'
+        - $ref: '#/components/schemas/MediaAnswer'
+        - $ref: '#/components/schemas/MediaCandidate'
+      discriminator:
+        propertyName: op
+        mapping:
+          join: '#/components/schemas/MediaJoin'
+          publish: '#/components/schemas/MediaPublish'
+          offer: '#/components/schemas/MediaOffer'
+          answer: '#/components/schemas/MediaAnswer'
+          candidate: '#/components/schemas/MediaCandidate'
+
+    MediaServerMessage:
+      oneOf:
+        - $ref: '#/components/schemas/MediaJoined'
+        - $ref: '#/components/schemas/MediaOffer'
+        - $ref: '#/components/schemas/MediaAnswer'
+        - $ref: '#/components/schemas/MediaCandidate'
+        - $ref: '#/components/schemas/MediaError'
+      discriminator:
+        propertyName: op
+        mapping:
+          joined: '#/components/schemas/MediaJoined'
+          offer: '#/components/schemas/MediaOffer'
+          answer: '#/components/schemas/MediaAnswer'
+          candidate: '#/components/schemas/MediaCandidate'
+          error: '#/components/schemas/MediaError'
+
+    MediaJoin:
+      type: object
+      description: First client frame. Closes with 4001 if the token is invalid, expired or already used.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [join] }
+        d:
+          type: object
+          required: [token]
+          properties:
+            token: { type: string, description: '`VoiceSession.media.token`.' }
+
+    MediaJoined:
+      type: object
+      description: Reply to a valid `join`. Negotiation may start.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [joined] }
+        d: { type: object }
+
+    MediaPublish:
+      type: object
+      description: Declares what a local track is. Sent before the `offer` that carries it.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [publish] }
+        d:
+          type: object
+          required: [trackId, source]
+          properties:
+            trackId: { type: string, description: The local track's id (the `a=msid` track id in the SDP). }
+            source: { type: string, enum: [mic, camera, screen] }
+
+    MediaOffer:
+      type: object
+      description: Either side. Single PeerConnection, renegotiated whenever tracks are added or removed. The client is the polite peer.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [offer] }
+        d:
+          type: object
+          required: [sdp]
+          properties:
+            sdp: { type: string }
+
+    MediaAnswer:
+      type: object
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [answer] }
+        d:
+          type: object
+          required: [sdp]
+          properties:
+            sdp: { type: string }
+
+    MediaCandidate:
+      type: object
+      description: Trickle ICE, both directions. Same fields as RTCIceCandidateInit. Empty `candidate` = end of candidates.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [candidate] }
+        d:
+          type: object
+          required: [candidate]
+          properties:
+            candidate: { type: string }
+            sdpMid: { type: string }
+            sdpMLineIndex: { type: integer }
+
+    MediaError:
+      type: object
+      description: Sent just before the server closes the socket.
+      required: [op, d]
+      properties:
+        op: { type: string, enum: [error] }
+        d:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
