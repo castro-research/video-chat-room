@@ -5,7 +5,6 @@ import kurz.media.Capture
 import kurz.media.Device
 import kurz.media.MediaCapture
 import kurz.media.Participant
-import kurz.media.ScreenSource
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -156,36 +155,16 @@ private fun DeviceMenu(what: String, devices: List<Device>, selected: String?, d
     }
 }
 
-/** Ligada, o botão pára a partilha; desligada (ou na seta) abre a lista de ecrãs e janelas, e escolher uma liga a partilha com ela. Sem lista (Android/iOS) liga logo. */
+/** Ligada, o botão pára a partilha; desligada (ou na seta) abre a modal de ecrãs e janelas (SharePicker). Sem lista (Android/iOS) liga logo. */
 @Composable
 private fun ShareControl(s: AppState, cap: MediaCapture) {
-    var open by remember { mutableStateOf(false) }
-    fun pick() { cap.refreshScreenSources(); open = true }
-    Box {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Ctl(Icons.AutoMirrored.Outlined.ScreenShare, "Partilhar ecrã", s.sharing, offTint = p.textMuted) {
-                if (s.sharing) s.sharing = false else if (cap.canPickScreen) pick() else s.sharing = true
-            }
-            if (cap.canPickScreen) Box(Modifier.size(24.dp).rowClick(shape = CircleShape) { pick() }, Alignment.Center) {
-                Icon(Icons.Outlined.KeyboardArrowUp, "Escolher o que partilhar", Modifier.size(16.dp), tint = p.textMuted)
-            }
+    fun pick() { cap.refreshScreenSources(); s.sharePickerOpen = true }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Ctl(Icons.AutoMirrored.Outlined.ScreenShare, "Partilhar ecrã", s.sharing, offTint = p.textMuted) {
+            if (s.sharing) s.sharing = false else if (cap.canPickScreen) pick() else s.sharing = true
         }
-        DropdownMenu(open, { open = false }, containerColor = p.sidebar) {
-            val picked = cap.screenSourceId ?: cap.screenSources.firstOrNull()?.id
-            @Composable fun group(title: String, sources: List<ScreenSource>) {
-                if (sources.isEmpty()) return
-                Text(title, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), color = p.textFaint, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                sources.forEach { src ->
-                    DropdownMenuItem(
-                        text = { Text(src.name, Modifier.widthIn(max = 300.dp), color = p.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = { Icon(if (src.window) Icons.Outlined.WebAsset else Icons.Outlined.DesktopWindows, null, Modifier.size(16.dp), tint = if (s.sharing && src.id == picked) p.accent else p.textMuted) },
-                        onClick = { open = false; cap.selectScreen(src.id); s.sharing = true },
-                    )
-                }
-            }
-            if (cap.screenSources.isEmpty()) Text("A procurar…", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), color = p.textFaint, fontSize = 13.sp)
-            group("Ecrã inteiro", cap.screenSources.filter { !it.window })
-            group("Janela", cap.screenSources.filter { it.window })
+        if (cap.canPickScreen) Box(Modifier.size(24.dp).rowClick(shape = CircleShape) { pick() }, Alignment.Center) {
+            Icon(Icons.Outlined.KeyboardArrowUp, "Escolher o que partilhar", Modifier.size(16.dp), tint = p.textMuted)
         }
     }
 }

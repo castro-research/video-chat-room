@@ -131,6 +131,7 @@ class AppState(dark: Boolean = false, private val defaultServer: String = BuildI
     var roomId by mutableStateOf<String?>(null)          // sala real ligada; exclui um canal de voz de exemplo
     val inVoice get() = voiceChannelId != null || roomId != null
     var createRoomOpen by mutableStateOf(false)          // modal de criar canal
+    var sharePickerOpen by mutableStateOf(false)         // modal de escolher o que partilhar (ecrã/janela)
     fun joinRoom(id: String) { voiceChannelId = null; focus = null; roomId = id; viewVoice = true; contentOpen = true }
 
     private val voiceUsers = mapOf("general-talk" to listOf(govind, keshav), "dev-discussions" to listOf(krishna), "discussions" to listOf(vrinda))

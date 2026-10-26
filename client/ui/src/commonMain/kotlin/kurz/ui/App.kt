@@ -50,6 +50,7 @@ fun App(state: AppState = remember { AppState() }, capture: MediaCapture = remem
                 }
                 ServerDialog(state)
                 CreateRoomDialog(state)
+                SharePicker(state)
             }
             }
         }

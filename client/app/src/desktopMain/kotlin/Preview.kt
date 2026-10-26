@@ -61,7 +61,7 @@ private class FakeRooms(private val slow: Boolean = false, empty: Boolean = fals
 }
 
 // Renderiza um painel para PNG: ./gradlew renderPane -Ppane=chat -Pdark=true -Pw=800 -Ph=900 -Pout=/caminho/x.png
-// panes: app (lista) | appchat | appvoice | appvoicecam | approom (sala real de mentira) | approomfocus (partilha em destaque) | approomclick (clica num mosaico) | approomswitch (a trocar de sala, entrada pendente) | appservers (modal de servidores) | appcreate (modal de criar canal) | appempty (servidor sem salas) | appmembers (ecrã inteiro, responsivo ao -Pw) | sidebar | chat | members | voice
+// panes: app (lista) | appchat | appvoice | appvoicecam | approom (sala real de mentira) | approomfocus (partilha em destaque) | approomclick (clica num mosaico) | approomswitch (a trocar de sala, entrada pendente) | appservers (modal de servidores) | appcreate (modal de criar canal) | appshare (modal de partilha de ecrã, sem miniaturas) | appempty (servidor sem salas) | appmembers (ecrã inteiro, responsivo ao -Pw) | sidebar | chat | members | voice
 @OptIn(ExperimentalComposeUiApi::class)
 fun main(args: Array<String>) {
     val (pane, dark, w, h, out) = args
@@ -73,6 +73,7 @@ fun main(args: Array<String>) {
     if (pane == "approomfocus") state.focus = "screen:u2"  // a partilha da Vrinda em destaque
     if (pane == "appservers") { state.addServer("cord.kurz.fyi"); state.selectServer(state.servers.first()); state.serversOpen = true }
     if (pane == "appcreate") state.createRoomOpen = true
+    if (pane == "appshare") state.sharePickerOpen = true
     if (pane == "approomswitch") state.joinRoom("p0a1b2")  // clicou noutra sala e a entrada ainda não acabou
     if (pane == "voice" || pane == "appvoice" || pane == "appvoicecam") state.joinVoice("general-talk")
     if (pane == "appvoicecam") { state.camOn = true; state.sharing = true }

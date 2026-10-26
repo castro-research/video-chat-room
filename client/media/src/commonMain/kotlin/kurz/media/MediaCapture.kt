@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -18,6 +19,21 @@ data class Device(val id: String, val name: String)
 
 /** Uma coisa que se pode partilhar: um ecrã inteiro ou uma janela. [id] é do sistema; [name] o que se mostra. */
 data class ScreenSource(val id: String, val name: String, val window: Boolean)
+
+/** Resolução da partilha de ecrã: altura máxima em px; [Source] não reduz (a da própria fonte). */
+enum class ScreenResolution(val label: String, val height: Int) { P720("720p", 720), P1080("1080p", 1080), P1440("1440p", 1440), Source("Fonte", 0) }
+
+/** Qualidade da partilha de ecrã: resolução e quadros por segundo. */
+data class ScreenQuality(val resolution: ScreenResolution, val fps: Int) {
+    val label get() = "${resolution.label} · ${fps}fps"
+
+    companion object {
+        val fpsOptions = listOf(5, 15, 30, 60)
+        /** Os dois atalhos, com o recomendado: código (texto nítido, pouco movimento) e partilha normal. */
+        val PairCoding = ScreenQuality(ScreenResolution.P1440, 15)
+        val Normal = ScreenQuality(ScreenResolution.P1080, 30)
+    }
+}
 
 /**
  * Captura local de microfone, câmara e ecrã: permissões, arranque/paragem, pré-visualização e nível do microfone.
@@ -52,11 +68,16 @@ abstract class MediaCapture {
     var screenSources by mutableStateOf<List<ScreenSource>>(emptyList()); protected set
     /** Escolhido; null = o primeiro ecrã. */
     var screenSourceId by mutableStateOf<String?>(null); protected set
+    var screenQuality by mutableStateOf(ScreenQuality.Normal); protected set
+    /** Miniatura de cada [screenSources] por id; chegam uma a uma depois de [refreshScreenSources] (as que o sistema não dá ficam de fora). */
+    var screenThumbs by mutableStateOf<Map<String, ImageBitmap>>(emptyMap()); protected set
 
     open fun refreshDevices() {}
     open fun refreshScreenSources() {}
     /** Escolhe o que partilhar; com a partilha ligada troca em quente. */
     open fun selectScreen(id: String) {}
+    /** Muda a qualidade da partilha; com ela ligada reabre a fonte em quente. */
+    open fun selectScreenQuality(q: ScreenQuality) {}
 
     /** Muda de dispositivo; com a fonte ligada troca em quente, sem desligar o botão. */
     open fun selectMic(id: String?) {}

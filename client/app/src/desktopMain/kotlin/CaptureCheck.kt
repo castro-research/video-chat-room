@@ -5,6 +5,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asSkiaBitmap
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kurz.media.MediaCapture
@@ -40,6 +41,17 @@ fun main(args: Array<String>) {
         preview = "camera"; snapshot("camera")
         println("camera state=${cap.camera} -> ${File(dir, "camera.png")}")
         cap.stopCamera()
+
+        cap.refreshScreenSources(); delay(5000)
+        println("fontes ${cap.screenSources.size}, miniaturas ${cap.screenThumbs.size}:")
+        cap.screenSources.forEach { s ->
+            val th = cap.screenThumbs[s.id]
+            println("   ${if (s.window) "janela" else "ecrã  "} ${s.name.take(50)} -> ${th?.let { "${it.width}x${it.height}" } ?: "sem miniatura"}")
+        }
+        cap.screenSources.firstNotNullOfOrNull { s -> cap.screenThumbs[s.id]?.let { s to it } }?.let { (s, th) ->
+            File(dir, "thumb.png").writeBytes(th.asSkiaBitmap().let { org.jetbrains.skia.Image.makeFromBitmap(it) }.encodeToData(EncodedImageFormat.PNG)!!.bytes)
+            println("   exemplo (${s.name.take(30)}) -> ${File(dir, "thumb.png")}")
+        }
 
         println("screen start=${cap.startScreen()} state=${cap.screen} notice=${cap.notice}")
         delay(1500)

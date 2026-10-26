@@ -6,6 +6,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kurz.media.Capture
 import kurz.media.MediaCapture
+import kurz.media.ScreenQuality
+import kurz.media.ScreenResolution
 import kurz.media.rememberMediaCapture
 import org.jetbrains.skia.EncodedImageFormat
 import kotlin.system.exitProcess
@@ -78,6 +80,14 @@ fun main() {
             check(cap.screen == Capture.On && cap.notice == null && cap.screenSourceId == src.id, "partilha -> ${src.name}: fica On sem aviso (estado=${cap.screen}, notice=${cap.notice})")
             // sem imagem = falta a permissão de gravação do ecrã a quem lançou isto (no macOS o libwebrtc não dá frames nenhuns): aviso, não falha
             if (hasScreenFrame()) println("ok    partilha -> ${src.name} dá imagem") else println("AVISO partilha -> ${src.name} sem imagem (permissão de gravação do ecrã?)")
+        }
+        // qualidade: com a partilha ligada, mudar resolução/quadros reabre a fonte em quente (o estado não passa por Off)
+        for (q in listOf(ScreenQuality.PairCoding, ScreenQuality(ScreenResolution.Source, 60), ScreenQuality(ScreenResolution.P720, 5), ScreenQuality.Normal)) {
+            cap.notice = null
+            cap.selectScreenQuality(q); delay(1_000)
+            check(cap.screen == Capture.On, "qualidade -> ${q.label}: o estado fica On durante a troca")
+            delay(2_500)
+            check(cap.screen == Capture.On && cap.notice == null && cap.screenQuality == q, "qualidade -> ${q.label}: fica On sem aviso (estado=${cap.screen}, notice=${cap.notice})")
         }
         cap.stopScreen()
     }

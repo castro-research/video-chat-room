@@ -25,13 +25,17 @@ import dev.onvoid.webrtc.media.video.VideoDeviceSource
 import dev.onvoid.webrtc.media.video.VideoFrame
 import dev.onvoid.webrtc.media.video.VideoTrack
 import dev.onvoid.webrtc.media.video.VideoTrackSink
+import dev.onvoid.webrtc.media.video.desktop.DesktopCaptureCallback
+import dev.onvoid.webrtc.media.video.desktop.DesktopCapturer
 import dev.onvoid.webrtc.media.video.desktop.ScreenCapturer
 import dev.onvoid.webrtc.media.video.desktop.WindowCapturer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.skia.ColorAlphaType
@@ -195,14 +199,33 @@ internal class DesktopCapture : MediaCapture() {
 
     override val canPickScreen get() = true
 
+    private var thumbsJob: Job? = null
+
     override fun refreshScreenSources() {
-        scope.launch {
-            // o título vem null nos ecrãs; se a listagem falhar, fica o ecrã principal (id 0, o que o openScreen usa sem escolha) para a partilha ainda andar
-            screenSources = runCatching {
-                val screens = ScreenCapturer().run { try { desktopSources.mapIndexed { i, s -> ScreenSource("s${s.id}", s.title.orEmpty().ifBlank { "Ecrã ${i + 1}" }, false) } } finally { dispose() } }
-                val windows = WindowCapturer().run { try { desktopSources.filter { !it.title.isNullOrBlank() }.map { ScreenSource("w${it.id}", it.title, true) } } finally { dispose() } }
-                screens + windows
-            }.getOrElse { listOf(ScreenSource("s0", "Ecrã principal", false)) }
+        thumbsJob?.cancel()
+        thumbsJob = scope.launch {
+            screenThumbs = emptyMap()
+            val screens = ScreenCapturer(); val windows = WindowCapturer()
+            try {
+                // o título vem null nos ecrãs; se a listagem falhar, fica o ecrã principal (id 0, o que o openScreen usa sem escolha) para a partilha ainda andar
+                val found = runCatching {
+                    screens.desktopSources.mapIndexed { i, s -> Triple(screens, s, ScreenSource("s${s.id}", s.title.orEmpty().ifBlank { "Ecrã ${i + 1}" }, false)) } +
+                        windows.desktopSources.filter { !it.title.isNullOrBlank() }.map { Triple(windows, it, ScreenSource("w${it.id}", it.title, true)) }
+                }.getOrElse { screenSources = listOf(ScreenSource("s0", "Ecrã principal", false)); return@launch }
+                screenSources = found.map { it.third }
+                var shot: ImageBitmap? = null
+                val onFrame = DesktopCaptureCallback { result, frame -> if (result == DesktopCapturer.Result.SUCCESS) shot = frameToImage(frame, 480) }
+                screens.start(onFrame); windows.start(onFrame)
+                for ((capturer, source, ui) in found) {
+                    ensureActive()
+                    shot = null
+                    runCatching {  // o primeiro frame pode vir com erro temporário
+                        capturer.selectSource(source)
+                        repeat(5) { if (shot == null) { capturer.captureFrame(); if (shot == null) delay(60) } }
+                    }
+                    shot?.let { screenThumbs = screenThumbs + (ui.id to it) }
+                }
+            } finally { screens.dispose(); windows.dispose() }
         }
     }
 
@@ -211,21 +234,31 @@ internal class DesktopCapture : MediaCapture() {
         runCatching {
             val pick = screenSourceId
             val id = pick?.drop(1)?.toLong() ?: ScreenCapturer().run { try { desktopSources.firstOrNull()?.id ?: 0L } finally { dispose() } }
-            VideoDesktopSource().apply { setSourceId(id, pick?.startsWith("w") == true); setFrameRate(15); setMaxFrameSize(1920, 1080); start() }
+            VideoDesktopSource().apply { setSourceId(id, pick?.startsWith("w") == true); setFrameRate(screenQuality.fps); setMaxFrameSize(screenQuality.maxWidth, screenQuality.maxHeight); start() }
         }.getOrNull()
     }
 
-    // Troca em quente, como na câmara: abre a nova fonte antes de largar a velha e republica a track "screen".
     override fun selectScreen(id: String) {
         if (id == screenSourceId) return
         val previous = screenSourceId
         screenSourceId = id
-        if (screen != Capture.On) return
+        if (screen == Capture.On) swapScreen { screenSourceId = previous }
+    }
+
+    override fun selectScreenQuality(q: ScreenQuality) {
+        if (q == screenQuality) return
+        val previous = screenQuality
+        screenQuality = q
+        if (screen == Capture.On) swapScreen { screenQuality = previous }
+    }
+
+    // Troca em quente, como na câmara: abre a nova fonte antes de largar a velha e republica a track "screen"; [revert] desfaz a escolha se não abrir.
+    private fun swapScreen(revert: () -> Unit) {
         scope.launch {
             val src = openScreen()
             if (src == null || screen != Capture.On) {
                 src?.stop()
-                if (src == null) { screenSourceId = previous; notice = Msg.NO_SCREEN }
+                if (src == null) { revert(); notice = Msg.NO_SCREEN }
                 return@launch
             }
             val old = screenSource
@@ -274,6 +307,7 @@ internal class DesktopCapture : MediaCapture() {
  * Guarda o último frame de uma VideoTrack como ImageBitmap para a UI, com teto de ~15 fps e [maxWidth] px de largura
  * (I420 → BGRA no libyuv; o resto do frame nem é convertido).
  */
+@Volatile private var tmpLast = ""  // TEMP
 class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
     var image by mutableStateOf<ImageBitmap?>(null); private set
     /** Frames recebidos (incluindo os que o teto de fps descarta). */
@@ -282,18 +316,29 @@ class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
 
     override fun onVideoFrame(frame: VideoFrame) {
         count++
+        if (maxWidth == 960) { val z = "${frame.buffer.width}x${frame.buffer.height}"; if (z != tmpLast) { tmpLast = z; println("TMPSZ $z") } }  // TEMP
         val now = System.nanoTime()
         if (now - last < 66_000_000) return
         last = now
-        val b = frame.buffer
-        val w = minOf(b.width, maxWidth) and 1.inv()
-        val h = (b.height.toLong() * w / b.width).toInt() and 1.inv()
-        if (w <= 0 || h <= 0) return
-        val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)  // cópia em memória Java: não tem release
-        val px = ByteArray(w * h * 4)
-        VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
-        image = SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
+        image = frameToImage(frame, maxWidth) ?: return
     }
 
     fun clear() { image = null }
+}
+
+// O limite é uma caixa larga (32:9) para a altura mandar também nos ecrãs ultra-largos; Fonte = caixa de 8K (não reduz nada).
+private val ScreenQuality.maxHeight get() = resolution.height.takeIf { it > 0 } ?: 4320
+private val ScreenQuality.maxWidth get() = if (resolution.height > 0) resolution.height * 32 / 9 else 7680
+
+/** Último frame de uma captura como ImageBitmap de no máximo [maxWidth] px de largura (I420 → BGRA no libyuv; o resto do frame nem é convertido); null se vier vazio. */
+internal fun frameToImage(frame: VideoFrame, maxWidth: Int): ImageBitmap? {
+    val b = frame.buffer
+    val w = minOf(b.width, maxWidth) and 1.inv()
+    if (w <= 0) return null
+    val h = (b.height.toLong() * w / b.width).toInt() and 1.inv()
+    if (h <= 0) return null
+    val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)  // cópia em memória Java: não tem release
+    val px = ByteArray(w * h * 4)
+    VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
+    return SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
 }
