@@ -376,7 +376,6 @@ private class IosMediaSession(
         }
     }
 
-    @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
     private suspend fun onOffer(sdp: String) {
         if (peer.signalingState != SignalingState.Stable) {
             peer.setLocalDescription(SessionDescription(SessionDescriptionType.Rollback, ""))
@@ -384,8 +383,6 @@ private class IosMediaSession(
         }
         peer.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, sdp))
         flushCandidates()
-        println("KURZ-TRX " + peer.getTransceivers().map { "mid=${it.mid} kind=${it.receiver.track?.kind} dir=${it.direction} cur=${it.currentDirection}" })  // TEMPORÁRIO: porque é que o vídeo é rejeitado; remover
-        println("KURZ-RECV " + (WebRTC.RTCPeerConnectionFactory().rtpReceiverCapabilitiesForKind("video").codecs.map { (it as WebRTC.RTCRtpCodecCapability).name }))  // TEMPORÁRIO
         val answer = peer.createAnswer(OfferAnswerOptions())
         peer.setLocalDescription(answer)
         send(mediaFrame("answer", "sdp" to answer.sdp))

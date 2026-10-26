@@ -1,6 +1,10 @@
 package kurz.media
 
+import WebRTC.RTCDefaultVideoDecoderFactory
+import WebRTC.RTCDefaultVideoEncoderFactory
+import WebRTC.RTCPeerConnectionFactory
 import WebRTC.RTCVideoRendererProtocol
+import com.shepeliev.webrtckmp.WebRtc
 import com.shepeliev.webrtckmp.VideoTrack
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.UIKit.UIView
@@ -11,6 +15,7 @@ import platform.UIKit.UIView
  */
 @OptIn(ExperimentalForeignApi::class)
 class IosMedia {
+    init { WebRtc.configure(RTCPeerConnectionFactory(encoderFactory = RTCDefaultVideoEncoderFactory(), decoderFactory = RTCDefaultVideoDecoderFactory())) }
     private val cap = IosCapture()
     private val client = IosRooms(cap)
     private val bound = mutableMapOf<UIView, VideoTrack>()
