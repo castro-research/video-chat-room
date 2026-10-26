@@ -422,12 +422,12 @@ internal fun frameToImage(frame: VideoFrame, maxWidth: Int): ImageBitmap? {
     if (w <= 0) return null
     val h = (b.height.toLong() * w / b.width).toInt() and 1.inv()
     if (h <= 0) return null
-    val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)
+    val scaled = if (w == b.width && h == b.height) null else b.cropAndScale(0, 0, b.width, b.height, w, h)
     return try {
         val px = ByteArray(w * h * 4)
-        VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
+        VideoBufferConverter.convertFromI420(scaled ?: b, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
         SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
     } finally {
-        scaled.release()
+        scaled?.release()
     }
 }
