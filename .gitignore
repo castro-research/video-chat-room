@@ -7,3 +7,4 @@ local.properties
 xcuserdata/
 DerivedData/
 *.xcuserstate
+**/.env

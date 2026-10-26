@@ -1,6 +1,7 @@
 package kurz.ui
 
 import kurz.core.*
+import kurz.media.Capture
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,13 +28,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-private val camPhoto = Photo(0xFF6C7FC9, 0xFFF08F8F, 0xFF3A3F57, 1.78f)
+import kotlinx.coroutines.delay
 
 @Composable
 fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
     val ch = s.voiceChannel ?: return
     val people = s.voiceParticipants(ch.id)
+    val cap = LocalMediaCapture.current
     val speaking = people.firstOrNull { it != s.me }
     val others = people.size - 1
     Column(modifier.background(p.main)) {
@@ -53,6 +55,7 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
                 horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 items(people, key = { it.id }) { u -> Tile(s, u, u == speaking) }
+                if (s.sharing && cap.screen == Capture.On) item(key = "screen") { ScreenTile(s) }
             }
             if (others == 0) Text(
                 "Ainda ninguém mais está nesta sala. Quem entrar aparece aqui.", color = p.textFaint, fontSize = 13.sp,
@@ -61,6 +64,7 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
         }
         // controlos
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.border))
+        cap.notice?.let { Notice(it) { cap.notice = null } }
         Row(Modifier.fillMaxWidth().height(80.dp), Arrangement.Center, Alignment.CenterVertically) {
             Ctl(if (s.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic, "Microfone", !s.muted) { s.muted = !s.muted }
             Spacer(Modifier.width(12.dp))
@@ -90,24 +94,58 @@ private fun Ctl(icon: ImageVector, desc: String, active: Boolean, offTint: Color
 }
 
 @Composable
-private fun Tile(s: AppState, u: User, speaking: Boolean) {
+private fun Tile(s: AppState, u: User, otherSpeaking: Boolean) {
     val me = u == s.me
+    val cap = LocalMediaCapture.current
+    val micOn = me && cap.mic == Capture.On && !s.muted
+    // o próprio fala quando o volume real do microfone passa o limiar (~ -42 dB)
+    val speaking = if (me) micOn && cap.micLevel > 0.3f else otherSpeaking
     val shape = RoundedCornerShape(12.dp)
     Box(
         Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(p.sidebar)
             .border(if (speaking) 2.dp else 1.dp, if (speaking) p.accent else p.border, shape),
         Alignment.Center,
     ) {
-        if (me && s.camOn) PhotoView(camPhoto, Modifier.fillMaxSize(), shape) else Avatar(u, 88.dp)
+        if (me && s.camOn && cap.camera == Capture.On) cap.CameraPreview(Modifier.fillMaxSize()) else Avatar(u, 88.dp)
         Text(
             if (me) "${u.name} (tu)" else u.name, color = Color.White, fontSize = 12.sp,
             modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).clip(RoundedCornerShape(6.dp))
                 .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
         )
+        if (micOn) Box(Modifier.align(Alignment.BottomStart).fillMaxWidth(cap.micLevel).height(3.dp).background(p.accent))
         if (me && s.muted) Icon(
             Icons.Outlined.MicOff, null, tint = p.danger,
             modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(24.dp).clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.55f)).padding(4.dp),
         )
+    }
+}
+
+/** A partilha de ecrã do próprio utilizador, num mosaico à parte. */
+@Composable
+private fun ScreenTile(s: AppState) {
+    val shape = RoundedCornerShape(12.dp)
+    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(Color.Black).border(1.dp, p.border, shape), Alignment.Center) {
+        LocalMediaCapture.current.ScreenPreview(Modifier.fillMaxSize())
+        Text(
+            "${s.me.name} · ecrã", color = Color.White, fontSize = 12.sp,
+            modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).clip(RoundedCornerShape(6.dp))
+                .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+}
+
+/** Aviso de permissão/dispositivo em falta; toque para fechar, fecha sozinho ao fim de alguns segundos. */
+@Composable
+private fun Notice(text: String, onDismiss: () -> Unit) {
+    LaunchedEffect(text) { delay(8_000); onDismiss() }
+    Row(
+        Modifier.fillMaxWidth().background(p.danger.copy(alpha = 0.12f)).rowClick(shape = RoundedCornerShape(0.dp)) { onDismiss() }
+            .padding(horizontal = gutter, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Outlined.ErrorOutline, null, Modifier.size(18.dp), tint = p.danger)
+        Text(text, color = p.text, fontSize = 12.5.sp, modifier = Modifier.weight(1f))
+        Icon(Icons.Outlined.Close, "Fechar", Modifier.size(16.dp), tint = p.textMuted)
     }
 }

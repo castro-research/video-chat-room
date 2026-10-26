@@ -19,6 +19,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":core"))
+            api(project(":media"))
             implementation(compose.foundation)
             implementation(compose.material3)
             implementation(compose.materialIconsExtended)

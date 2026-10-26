@@ -1,6 +1,8 @@
 package kurz.ui
 
 import kurz.core.*
+import kurz.media.MediaCapture
+import kurz.media.rememberMediaCapture
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,7 +25,8 @@ import androidx.compose.ui.unit.dp
 //  Compact   um painel de cada vez: lista de canais → chat/sala, gaveta de membros
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun App(state: AppState = remember { AppState() }) {
+fun App(state: AppState = remember { AppState() }, capture: MediaCapture = rememberMediaCapture()) {
+    CaptureSync(state, capture)
     KurzTheme(state.dark) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wc = windowClassFor(maxWidth)
@@ -31,7 +34,7 @@ fun App(state: AppState = remember { AppState() }) {
             val bg = if (wc == WindowClass.Compact && !state.contentOpen) p.sidebar else p.main
             val outer = this
             Box(Modifier.fillMaxSize().background(bg).windowInsetsPadding(WindowInsets.safeDrawing)) {
-            CompositionLocalProvider(LocalWindowClass provides wc) {
+            CompositionLocalProvider(LocalWindowClass provides wc, LocalMediaCapture provides capture) {
                 val full = Modifier.fillMaxSize()
                 if (wc == WindowClass.Compact) {
                     BackHandler(enabled = state.membersOverlay || state.contentOpen) {
