@@ -10,3 +10,4 @@ DerivedData/
 **/.env
 /experimentos/manager/manager
 /experimentos/sfu/sfu
+**/dist
