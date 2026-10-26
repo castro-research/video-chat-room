@@ -58,6 +58,7 @@ struct VoiceRoomView: View {
         HStack(spacing: 16) {
             ctl(app.muted ? "mic.slash" : "mic", "Microfone", on: !app.muted) { app.setMuted(!app.muted) }
             ctl(app.camOn ? "video" : "video.slash", "Câmara", on: app.camOn) { app.setCamera(!app.camOn) }
+            if app.camOn && CameraCapture.cameras.count > 1 { ctl("camera.rotate", "Trocar de câmara", on: true) { app.flipCamera() } }
             RoutePicker().frame(width: 48, height: 48).background(P.input, in: Circle()).accessibilityLabel("Saída de áudio")
             Button { app.leaveVoice() } label: {
                 HStack(spacing: 8) { Image(systemName: "phone.down"); Text("Sair").font(.system(size: 13, weight: .semibold)) }

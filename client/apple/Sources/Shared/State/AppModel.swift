@@ -112,7 +112,13 @@ final class AppModel: ObservableObject {
     // --- botões: cada um liga/desliga a captura respectiva; um pedido recusado repõe o botão ---
 
     func setMuted(_ on: Bool) { muted = on; syncMic() }
-    func setCamera(_ on: Bool) { camOn = on; syncCamera() }
+    func setCamera(_ on: Bool) {
+        camOn = on
+#if os(iOS)
+        cameraId = nil  // ao religar volta a abrir a frontal
+#endif
+        syncCamera()
+    }
     func stopSharing() { sharing = false; syncScreen() }
 
     /// Liga a partilha com [source] (ou troca, se já estava a partilhar).
@@ -141,6 +147,14 @@ final class AppModel: ObservableObject {
 
     func selectSpeaker(_ id: String?) {
         if !local.devices.select(output: id) { notice = "Não foi possível mudar a saída de áudio." }
+    }
+
+    /// Alterna entre a câmara frontal e a traseira (a frontal é a que abre por defeito).
+    func flipCamera() {
+        let all = CameraCapture.cameras
+        let current = all.first { $0.id == cameraId } ?? all.first { $0.front } ?? all.first
+        guard let next = all.first(where: { $0.front != current?.front }) else { return }
+        selectCamera(next.id)
     }
 
     func selectCamera(_ id: String) {

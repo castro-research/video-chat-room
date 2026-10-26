@@ -1,6 +1,5 @@
 #!/bin/sh
-# Gera os ícones de macOS, Linux e iOS a partir do K da Kurz (frontend/public/favicon.svg do projecto web).
-# Android usa vectores escritos à mão com as mesmas formas (androidApp/src/main/res).
+# Gera os ícones de macOS e iOS (client/apple/Resources) a partir do K da Kurz (frontend/public/favicon.svg do projecto web).
 # Requer: rsvg-convert (brew install librsvg), iconutil (macOS), magick (brew install imagemagick).
 set -e
 cd "$(dirname "$0")/.."
@@ -24,17 +23,16 @@ TILE="$OPEN$DEFS<rect x=\"100\" y=\"100\" width=\"824\" height=\"824\" rx=\"193\
 
 render() { printf '%s' "$1" | rsvg-convert -w "$2" -h "$2" -o "$3"; }
 
-mkdir -p branding iosApp/iosApp/Assets.xcassets/AppIcon.appiconset app/icons app/src/desktopMain/resources
+mkdir -p branding
 printf '%s' "$FULL" > branding/icon.svg
 printf '%s' "$TILE" > branding/icon-tile.svg
 
 # iOS (ícone único 1024, sem canal alfa)
-IOS=iosApp/iosApp/Assets.xcassets
+IOS=apple/Resources/iOS/Assets.xcassets
+mkdir -p "$IOS/AppIcon.appiconset"
 render "$FULL" 1024 "$IOS/AppIcon.appiconset/icon-1024.png"
 magick "$IOS/AppIcon.appiconset/icon-1024.png" -alpha off "$IOS/AppIcon.appiconset/icon-1024.png"
-cat > "$IOS/Contents.json" <<'EOF'
-{ "info": { "author": "xcode", "version": 1 } }
-EOF
+echo '{ "info": { "author": "xcode", "version": 1 } }' > "$IOS/Contents.json"
 cat > "$IOS/AppIcon.appiconset/Contents.json" <<'EOF'
 {
   "images": [ { "filename": "icon-1024.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" } ],
@@ -42,15 +40,15 @@ cat > "$IOS/AppIcon.appiconset/Contents.json" <<'EOF'
 }
 EOF
 
-# macOS (.icns)
-SET=$(mktemp -d)/icon.iconset; mkdir -p "$SET"
+# macOS (catálogo com 16..512 @1x/@2x)
+MAC=apple/Resources/macOS/Assets.xcassets
+mkdir -p "$MAC/AppIcon.appiconset"
+echo '{ "info": { "author": "xcode", "version": 1 } }' > "$MAC/Contents.json"
+IMAGES=""
 for s in 16 32 128 256 512; do
-  render "$TILE" "$s" "$SET/icon_${s}x${s}.png"
-  render "$TILE" "$((s * 2))" "$SET/icon_${s}x${s}@2x.png"
+  render "$TILE" "$s" "$MAC/AppIcon.appiconset/icon_${s}.png"
+  render "$TILE" "$((s * 2))" "$MAC/AppIcon.appiconset/icon_${s}@2x.png"
+  IMAGES="$IMAGES{ \"filename\": \"icon_${s}.png\", \"idiom\": \"mac\", \"scale\": \"1x\", \"size\": \"${s}x${s}\" }, { \"filename\": \"icon_${s}@2x.png\", \"idiom\": \"mac\", \"scale\": \"2x\", \"size\": \"${s}x${s}\" }, "
 done
-iconutil -c icns "$SET" -o app/icons/icon.icns
-
-# Linux (.deb) e ícone da janela/Dock em runtime
-render "$TILE" 512 app/icons/icon.png
-cp app/icons/icon.png app/src/desktopMain/resources/icon.png
+printf '{ "images": [ %s ], "info": { "author": "xcode", "version": 1 } }\n' "${IMAGES%, }" > "$MAC/AppIcon.appiconset/Contents.json"
 echo "ok"

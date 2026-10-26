@@ -21,7 +21,7 @@ struct TileView: View {
         let speaking = tile.kind == .person && mine && !app.muted && app.session.micLevel > 0.05
         ZStack(alignment: .bottomLeading) {
             P.sidebar
-            content(mine: mine)
+            content(mine: mine).frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 6) {
                 if tile.kind == .person && !person.mic { Image(systemName: "mic.slash").font(.system(size: 11)).foregroundColor(.white) }
                 Text(tile.kind == .screen ? "\(tile.name) · ecrã" : tile.name).font(.system(size: 12, weight: .medium)).foregroundColor(.white).lineLimit(1)

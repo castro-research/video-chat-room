@@ -5,6 +5,7 @@ import WebRTC
 struct Camera: Identifiable, Hashable {
     let id: String
     let name: String
+    let front: Bool
 }
 
 /// A câmara: a track "camera" que a sala publica e a pré-visualização usa. Trocar de câmara troca só o dispositivo
@@ -15,10 +16,15 @@ final class CameraCapture {
     private var capturer: RTCCameraVideoCapturer?
     private let defaults = UserDefaults.standard
 
-    static var cameras: [Camera] { RTCCameraVideoCapturer.captureDevices().map { Camera(id: $0.uniqueID, name: $0.localizedName) } }
+    static var cameras: [Camera] { RTCCameraVideoCapturer.captureDevices().map { Camera(id: $0.uniqueID, name: $0.localizedName, front: $0.position == .front) } }
 
     /// A câmara lembrada, se ainda existir.
+    /// No iPhone/iPad abre sempre a frontal (a traseira é uma troca de momento, não uma preferência).
+#if os(iOS)
+    var rememberedId: String? { nil }
+#else
     var rememberedId: String? { defaults.string(forKey: "camera").flatMap { id in Self.cameras.contains { $0.id == id } ? id : nil } }
+#endif
 
     /// false se o sistema negou a câmara ou não há nenhuma que abra.
     func start(deviceId: String?) async -> Bool {
@@ -37,6 +43,10 @@ final class CameraCapture {
     /// Troca de câmara com a captura ligada; false (e fica a anterior) se a nova não abrir.
     func switchTo(deviceId: String) async -> Bool {
         guard let cap = capturer else { return false }
+#if os(iOS)
+        // com a sessão multi-câmara do iOS, abrir a nova sem parar a velha repete a ligação ao mesmo output e lança uma excepção
+        await cap.stopCapture()
+#endif
         return await open(cap, deviceId: deviceId)
     }
 
@@ -47,7 +57,7 @@ final class CameraCapture {
 
     private func open(_ cap: RTCCameraVideoCapturer, deviceId: String?) async -> Bool {
         let devices = RTCCameraVideoCapturer.captureDevices()
-        guard let device = devices.first(where: { $0.uniqueID == deviceId }) ?? devices.first, let format = Self.format(for: device) else { return false }
+        guard let device = devices.first(where: { $0.uniqueID == deviceId }) ?? devices.first(where: { $0.position == .front }) ?? devices.first, let format = Self.format(for: device) else { return false }
         do {
             try await cap.startCapture(with: device, format: format, fps: 30)
             defaults.set(device.uniqueID, forKey: "camera")

@@ -27,7 +27,7 @@ struct ControlsBar: View {
                     ForEach(CameraCapture.cameras) { Text($0.name).tag($0.id) }
                 }.pickerStyle(.inline).labelsHidden()
             }
-            round("rectangle.on.rectangle", on: app.sharing, help: app.sharing ? "Parar partilha" : "Partilhar ecrã") {
+            round(app.sharing ? "stop.fill" : "rectangle.on.rectangle", on: app.sharing, tint: P.danger, help: app.sharing ? "Parar partilha" : "Partilhar ecrã") {
                 if app.sharing { app.stopSharing() } else { app.refreshScreenSources(); sharePicker = true }
             }
             if app.sharing {
@@ -40,10 +40,10 @@ struct ControlsBar: View {
         }.padding(.vertical, 12).background(P.sidebar)
     }
 
-    private func round(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
+    private func round(_ symbol: String, on: Bool, tint: Color = P.accent, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 15)).foregroundColor(on ? .white : P.text)
-                .frame(width: 40, height: 40).background(on ? P.accent : P.input, in: Circle())
+                .frame(width: 40, height: 40).background(on ? tint : P.input, in: Circle())
         }.buttonStyle(.plain).help(help)
     }
 
