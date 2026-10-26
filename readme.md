@@ -10,7 +10,11 @@ Existem papers Media over QUIC [1], WebTransport, WebRTC [2], entre outras...
 
 ## Objetivo
 
+Aprender o que esta por trás de um sistema de vídeo conferência em tempo real.
 
+Qual papel do SFU Server, do TURN Server, do protocolo do WebRTC, etc... 
+
+Em resumo, o que está envolvido na arquitetura.
 
 # Referências
 
