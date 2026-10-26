@@ -2,6 +2,9 @@ package kurz.ui
 
 import kurz.core.*
 import kurz.media.Room
+import kurz.media.peopleIn
+import kurz.media.shownRoom
+import kurz.media.user
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -95,10 +98,7 @@ private fun heart(t: String, c: Color): AnnotatedString = buildAnnotatedString {
 @Composable
 private fun RoomsSection(s: AppState) {
     val r = LocalRooms.current
-    LaunchedEffect(s.managerUrl) {
-        delay(300)  // espera que se acabe de escrever a URL
-        while (true) { r.list(s.managerUrl); delay(3_000) }
-    }
+    RoomListSync(s, r)
     val empty = r.rooms.isEmpty() && r.listError == null  // servidor sem nada: sem o título não há "+", por isso o menu
     Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 8.dp).height(24.dp), verticalAlignment = Alignment.CenterVertically) {

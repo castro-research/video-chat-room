@@ -59,6 +59,7 @@ internal class IosCapture : MediaCapture() {
     private var cameraStream: MediaStream? = null
     private var micTrack: AudioTrack? = null
     private var cameraTrack by mutableStateOf<VideoTrack?>(null)
+    internal val cameraVideo: VideoTrack? get() = cameraTrack
     private var screenView: UIImageView? = null
     private var lastFrame = 0.0
     internal var onTrack: ((source: String, track: com.shepeliev.webrtckmp.MediaStreamTrack?) -> Unit)? = null

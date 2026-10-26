@@ -16,6 +16,7 @@ import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
 import com.shepeliev.webrtckmp.SignalingState
+import com.shepeliev.webrtckmp.AudioTrack
 import com.shepeliev.webrtckmp.VideoTrack
 import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
@@ -52,9 +53,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import WebRTC.RTCDefaultVideoDecoderFactory
-import WebRTC.RTCDefaultVideoEncoderFactory
-import WebRTC.RTCVideoCodecInfo
 
 private val http = HttpClient(Darwin) {
     // o URLSession tenta QUIC/HTTP3 primeiro e o WebSocket não passa em h3 atrás do Cloudflare ("Socket is not connected"): força TCP
@@ -71,10 +69,14 @@ actual fun rememberRoomClient(capture: MediaCapture): RoomClient {
     return client
 }
 
-private class IosRooms(private val capture: IosCapture?) : RoomClient() {
+internal class IosRooms(private val capture: IosCapture?) : RoomClient() {
     private val remote = mutableStateMapOf<String, VideoTrack>()
+    private val audio = mutableStateMapOf<String, AudioTrack>()  // `<userId>:<source>` -> áudio remoto, para o volume
     private var listedBase = ""
     private var session: IosMediaSession? = null
+
+    internal fun remoteTrack(key: String): VideoTrack? = remote[key]
+    internal fun remoteKeys(): List<String> = remote.keys.toList()
 
     override suspend fun list(base: String) {
         if (base != listedBase) {
@@ -137,7 +139,7 @@ private class IosRooms(private val capture: IosCapture?) : RoomClient() {
                 notice = reason
                 session = null
                 capture?.onTrack = null
-                remote.clear()
+                remote.clear(); audio.clear()
                 reconnecting = true
             }
         }
@@ -149,8 +151,20 @@ private class IosRooms(private val capture: IosCapture?) : RoomClient() {
         reconnecting = false
     }
 
+    override val canSetVolume get() = true
+
+    override fun setVolume(userId: String, v: Float) {
+        val vol = v.coerceIn(0f, MAX_VOLUME)
+        volumes = volumes + (userId to vol)
+        audio.forEach { (key, t) -> if (key.substringBefore(':') == userId) t.setVolume(vol.toDouble()) }
+    }
+
     private fun onRemoteTrack(track: MediaStreamTrack, added: Boolean, userId: String, source: String) {
         val key = "$userId:$source"
+        if (track is AudioTrack) {  // toca sozinho; aqui só se ajusta o volume
+            if (added) { audio[key] = track; track.setVolume(volume(userId).toDouble()) } else audio.remove(key)
+            return
+        }
         if (added && track is VideoTrack) remote[key] = track else remote.remove(key)
     }
 
@@ -171,7 +185,7 @@ private class IosRooms(private val capture: IosCapture?) : RoomClient() {
         val current = session
         session = null
         current?.close()
-        remote.clear()
+        remote.clear(); audio.clear()
     }
 
     private suspend fun <T> attempt(block: suspend () -> T): T? =
@@ -370,10 +384,10 @@ private class IosMediaSession(
         }
         peer.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, sdp))
         flushCandidates()
+        println("KURZ-TRX " + peer.getTransceivers().map { "mid=${it.mid} kind=${it.receiver.track?.kind} dir=${it.direction} cur=${it.currentDirection}" })  // TEMPORÁRIO: porque é que o vídeo é rejeitado; remover
+        println("KURZ-RECV " + (WebRTC.RTCPeerConnectionFactory().rtpReceiverCapabilitiesForKind("video").codecs.map { (it as WebRTC.RTCRtpCodecCapability).name }))  // TEMPORÁRIO
         val answer = peer.createAnswer(OfferAnswerOptions())
         peer.setLocalDescription(answer)
-        println("KURZ-CODECS dec=${RTCDefaultVideoDecoderFactory().supportedCodecs().map { (it as RTCVideoCodecInfo).name }} enc=${RTCDefaultVideoEncoderFactory().supportedCodecs().map { (it as RTCVideoCodecInfo).name }}")  // TEMPORÁRIO
-        println("KURZ-SDP offer:\n$sdp\nKURZ-SDP answer:\n${answer.sdp}")  // TEMPORÁRIO: diagnóstico do codec; remover
         send(mediaFrame("answer", "sdp" to answer.sdp))
     }
 

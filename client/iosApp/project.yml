@@ -34,8 +34,8 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         ARCHS: arm64  # os alvos Kotlin são só iosArm64/iosSimulatorArm64: sem simulador x86_64
-        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../ui/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
-        OTHER_LDFLAGS: "$(inherited) -framework KurzUi"
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../shared/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+        OTHER_LDFLAGS: "$(inherited) -framework KurzShared"
     preBuildScripts:
       - name: Compile Kotlin framework
         basedOnDependencyAnalysis: false
@@ -44,7 +44,7 @@ targets:
           if [ -z "$JAVA_HOME" ]; then
             export JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home -v 17)
           fi
-          cd "$SRCROOT/.." && ./gradlew :ui:embedAndSignAppleFrameworkForXcode
+          cd "$SRCROOT/.." && ./gradlew :shared:embedAndSignAppleFrameworkForXcode
 schemes:
   iosApp:
     build:

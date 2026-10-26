@@ -6,6 +6,9 @@ import kurz.media.Device
 import kurz.media.MAX_VOLUME
 import kurz.media.MediaCapture
 import kurz.media.Participant
+import kurz.media.peopleIn
+import kurz.media.shownRoom
+import kurz.media.user
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -281,7 +284,3 @@ internal fun Notice(text: String, onDismiss: () -> Unit) {
         Icon(Icons.Outlined.Close, "Fechar", Modifier.size(16.dp), tint = p.textMuted)
     }
 }
-
-/** O participante como User da UI; o próprio é [me], para a pré-visualização local e o "(tu)". */
-internal fun Participant.user(me: User, myId: String) =
-    if (userId == myId) me else User(userId, name, Status.Online, hue = (userId.hashCode() and 0x7fffffff) % 360f)

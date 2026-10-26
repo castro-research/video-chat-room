@@ -10,12 +10,6 @@ plugins {
 kotlin {
     jvm("desktop")
     androidTarget { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
-    listOf(iosArm64(), iosSimulatorArm64()).forEach {
-        it.binaries.framework {
-            baseName = "KurzUi"
-            isStatic = true
-        }
-    }
     sourceSets {
         commonMain.dependencies {
             api(project(":core"))

@@ -1,89 +1,29 @@
 package kurz.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.staticCompositionLocalOf
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeMark
-import kotlin.time.TimeSource
 import kurz.core.AppState
-import kurz.media.Capture
 import kurz.media.MediaCapture
-import kurz.media.Participant
-import kurz.media.Room
 import kurz.media.RoomClient
+import kurz.media.syncCapture
+import kurz.media.syncHealth
+import kurz.media.syncRoom
+import kurz.media.syncRoomList
 
 val LocalMediaCapture = staticCompositionLocalOf<MediaCapture> { error("MediaCapture não fornecido") }
 val LocalRooms = staticCompositionLocalOf<RoomClient> { error("RoomClient não fornecido") }
 
-/** Liga os botões (muted/camOn/sharing) à captura real: só captura com a sala ligada, e um pedido recusado repõe o botão. */
+// A lógica está em kurz.media.Session (partilhada com o iOS nativo); aqui só se prende ao ciclo de vida da composição.
+
 @Composable
-fun CaptureSync(s: AppState, c: MediaCapture) {
-    val joined = s.inVoice
-    LaunchedEffect(joined, s.muted) { if (joined && !s.muted) { if (!c.startMic()) s.muted = true } else c.stopMic() }
-    LaunchedEffect(joined, s.camOn) { if (joined && s.camOn) { if (!c.startCamera()) s.camOn = false } else c.stopCamera() }
-    LaunchedEffect(joined, s.sharing) { if (joined && s.sharing) { if (!c.startScreen()) s.sharing = false } else c.stopScreen() }
-    // a câmara também pode falhar depois de arrancar (ex.: dispositivo ocupado); a partilha pode ser parada pelo sistema
-    LaunchedEffect(c.camera) { if (c.camera == Capture.Off && s.camOn) s.camOn = false }
-    DisposableEffect(c) { c.onScreenStopped = { s.sharing = false }; onDispose { c.onScreenStopped = null } }
-}
+fun CaptureSync(s: AppState, c: MediaCapture) = LaunchedEffect(s, c) { syncCapture(s, c) }
 
-// UI otimista: ao clicar numa sala a UI mostra-a já, com o que se sabe (a última listagem) e o próprio lá dentro, em vez de
-// esperar o manager e o SFU (e o poll de 2–3 s). Se a entrada falhar, RoomSync tira o utilizador da sala e mostra o aviso.
-
-/** A sala real ligada (ou a ligar) como a UI a mostra: a do SFU se já respondeu, senão a da listagem; null se o código nem está listado. */
-internal fun shownRoom(s: AppState, r: RoomClient): Room? =
-    s.roomId?.let { id -> r.room?.takeIf { it.id == id } ?: r.rooms.firstOrNull { it.id == id } }
-
-/** Quem a UI mostra em [room]: na sala ligada o próprio entra já (com o estado dos botões), nas outras sai já. */
-internal fun peopleIn(room: Room, s: AppState, r: RoomClient): List<Participant> {
-    val known = if (s.roomId == room.id) shownRoom(s, r) ?: room else room
-    val others = known.participants.filter { it.userId != r.userId }
-    if (s.roomId != room.id) return others
-    return listOf(Participant(r.userId, s.me.name, mic = !s.muted, camera = s.camOn, screen = s.sharing)) + others
-}
-
-/**
- * Liga AppState.roomId à sala real: entra, actualiza os participantes a cada 2 s e sai. Se a ligação ao SFU cai fica na sala e tenta
- * voltar a cada 2 s (a UI mostra "a reconectar" e o desktop toca um som); só desiste, e sai, passados 30 s sem conseguir.
- * Falhou a primeira entrada ou o utilizador saiu = volta para fora da sala.
- */
 @Composable
-fun RoomSync(s: AppState, r: RoomClient) {
-    LaunchedEffect(s.roomId) {
-        val id = s.roomId ?: return@LaunchedEffect
-        try {
-            if (r.join(s.managerUrl, id, s.me.name)) {
-                var lostSince: TimeMark? = null
-                while (r.room != null) {
-                    delay(2_000)
-                    if (!r.reconnecting) { lostSince = null; r.poll(s.managerUrl); continue }
-                    val since = lostSince ?: TimeSource.Monotonic.markNow().also { lostSince = it }
-                    if (!r.reconnect(s.managerUrl, id, s.me.name) && since.elapsedNow() > 30.seconds) {
-                        r.notice = "Sem ligação ao servidor há mais de 30 s. Saíste da sala."
-                        r.leave()
-                    }
-                }
-            }
-            if (s.roomId == id) s.leaveVoice()
-        } finally {
-            r.leave()
-        }
-    }
-}
+fun RoomSync(s: AppState, r: RoomClient) = LaunchedEffect(s, r) { syncRoom(s, r) }
 
-/** Sonda o /healthz a cada 5 s: o servidor ligado sempre, os outros da lista só enquanto a modal está aberta. */
 @Composable
-fun HealthSync(s: AppState, r: RoomClient) {
-    LaunchedEffect(s.managerUrl, s.serversOpen, s.servers.size) {
-        while (true) {
-            val urls = if (s.serversOpen) s.servers.toList() else listOf(s.managerUrl)
-            coroutineScope { urls.forEach { u -> launch { s.health[u] = r.ping(u) } } }
-            delay(5_000)
-        }
-    }
-}
+fun HealthSync(s: AppState, r: RoomClient) = LaunchedEffect(s, r) { syncHealth(s, r) }
+
+@Composable
+fun RoomListSync(s: AppState, r: RoomClient) = LaunchedEffect(s, r) { syncRoomList(s, r) }
