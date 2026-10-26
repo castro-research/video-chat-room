@@ -87,3 +87,27 @@ tasks.register<JavaExec>("voiceCheck") {
     jvmArgs("-Djava.awt.headless=true", "--enable-native-access=ALL-UNNAMED")
     args(project.findProperty("manager") ?: "http://localhost:30080")
 }
+
+// O signing{} do plugin só aceita certificados "Developer ID"/"Mac Developer" (procura por esse prefixo), por isso assinamos nós,
+// com identidade fixa: com a assinatura ad-hoc do jpackage o macOS repete o pedido de câmara/mic/ecrã a cada build.
+// O packageDmg refaz o .app do zero, então assinamos o .app dentro do próprio .dmg (converte para RW, assina, volta a comprimir).
+// ponytail: Apple Development só serve a esta máquina; distribuir pede Developer ID + notarização
+tasks.matching { it.name == "packageDmg" }.configureEach {
+    doLast {
+        if (!System.getProperty("os.name").startsWith("Mac")) return@doLast
+        fun sh(vararg c: String) = check(ProcessBuilder(*c).inheritIO().start().waitFor() == 0) { "falhou: ${c.joinToString(" ")}" }
+        val dmg = layout.buildDirectory.dir("compose/binaries").get().asFile.walk().first { it.extension == "dmg" }
+        val tmp = temporaryDir.resolve("rw.dmg").also { it.delete() }
+        val mnt = temporaryDir.resolve("mnt").also { it.mkdirs() }
+        sh("hdiutil", "convert", dmg.path, "-format", "UDRW", "-o", tmp.path, "-quiet")
+        sh("hdiutil", "attach", tmp.path, "-mountpoint", mnt.path, "-nobrowse", "-quiet")
+        try {
+            sh("codesign", "--force", "--deep", "--sign", "Apple Development: Alexandro Castro (25NPKG5RNX)", mnt.resolve("Kurz Community.app").path)
+        } finally {
+            sh("hdiutil", "detach", mnt.path, "-quiet")
+        }
+        dmg.delete()
+        sh("hdiutil", "convert", tmp.path, "-format", "UDZO", "-o", dmg.path, "-quiet")
+        tmp.delete()
+    }
+}

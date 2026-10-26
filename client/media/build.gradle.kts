@@ -6,6 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    kotlin("native.cocoapods")
 }
 
 kotlin {
@@ -13,11 +14,29 @@ kotlin {
     androidTarget { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
     iosArm64()
     iosSimulatorArm64()
+    cocoapods {
+        version = "1.0.0"
+        summary = "Kurz media module"
+        homepage = "https://kurz.fyi"
+        ios.deploymentTarget = "16.0"
+        podfile = project.file("../iosApp/Podfile")
+        noPodspec()
+        pod("WebRTC-SDK") {
+            version = "125.6422.05"
+            moduleName = "WebRTC"
+        }
+    }
     sourceSets {
         commonMain.dependencies {
             implementation(compose.foundation)
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
             api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+        }
+        iosMain.dependencies {
+            implementation("com.shepeliev:webrtc-kmp:0.125.11")
+            implementation("io.ktor:ktor-client-core:3.3.0")
+            implementation("io.ktor:ktor-client-darwin:3.3.0")
+            implementation("io.ktor:ktor-client-websockets:3.3.0")
         }
         androidMain.dependencies {
             implementation("androidx.activity:activity-compose:1.12.2")
@@ -38,6 +57,10 @@ kotlin {
             }
         }
     }
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.PodBuildTask>().configureEach {
+    xcodeBuildSettings.put("IPHONEOS_DEPLOYMENT_TARGET", "16.0")
 }
 
 android {

@@ -1,6 +1,7 @@
 name: iosApp
 options:
   bundleIdPrefix: app.kurz
+  postGenCommand: pod install  # o xcodegen reescreve o .xcodeproj e apaga a integração dos Pods (WebRTC fica sem link)
   deploymentTarget:
     iOS: "16.0"
 targets:
@@ -16,6 +17,10 @@ targets:
         CADisableMinimumFrameDurationOnPhone: true
         NSCameraUsageDescription: Para chamadas de vídeo/voz na sala.
         NSMicrophoneUsageDescription: Para chamadas de vídeo/voz na sala.
+        NSLocalNetworkUsageDescription: Para ligar ao servidor de chamadas na rede local.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true  # manager http:// e SFU ws:// só em IPs/hosts da LAN; fora da LAN é preciso https/wss
+        UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations:
           [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortraitUpsideDown]
         UISupportedInterfaceOrientations~ipad:
@@ -28,8 +33,9 @@ targets:
         SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: NO
-        FRAMEWORK_SEARCH_PATHS: $(SRCROOT)/../ui/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)
-        OTHER_LDFLAGS: [-framework, KurzUi]
+        ARCHS: arm64  # os alvos Kotlin são só iosArm64/iosSimulatorArm64: sem simulador x86_64
+        FRAMEWORK_SEARCH_PATHS: "$(inherited) $(SRCROOT)/../ui/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+        OTHER_LDFLAGS: "$(inherited) -framework KurzUi"
     preBuildScripts:
       - name: Compile Kotlin framework
         basedOnDependencyAnalysis: false
@@ -39,3 +45,32 @@ targets:
             export JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home -v 17)
           fi
           cd "$SRCROOT/.." && ./gradlew :ui:embedAndSignAppleFrameworkForXcode
+schemes:
+  iosApp:
+    build:
+      targets:
+        iosApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  iosApp-Release:
+    build:
+      targets:
+        iosApp: all
+    run:
+      config: Release
+    test:
+      config: Release
+    profile:
+      config: Release
+    analyze:
+      config: Release
+    archive:
+      config: Release

@@ -72,8 +72,6 @@ abstract class RoomClient {
     /** Actualiza os participantes de [room]. */
     abstract suspend fun poll(base: String)
     abstract fun leave()
-    /** Som curto de estado da ligação: [up] = recuperou, senão caiu. Só o desktop toca. */
-    protected open fun cue(up: Boolean) {}
 
     /** Último frame da track remota `<userId>:<source>`; nada enquanto não houver. */
     @Composable abstract fun RemoteVideo(userId: String, source: String, modifier: Modifier)

@@ -53,9 +53,6 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.net.http.WebSocket
 import java.time.Duration
-import javax.sound.sampled.AudioFormat
-import javax.sound.sampled.AudioSystem
-import kotlin.math.sin
 import java.util.concurrent.CompletionStage
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -93,7 +90,7 @@ internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient()
     override suspend fun reconnect(base: String, id: String, name: String): Boolean {
         dropSession()
         val ok = try { open(base, id, name); true } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
-        if (ok) { reconnecting = false; cue(up = true) }
+        if (ok) reconnecting = false
         return ok
     }
 
@@ -102,8 +99,8 @@ internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient()
         val r = m.room(id)
         lateinit var s: MediaSession
         s = MediaSession(m.join(r.id, userId, name), userId, rtc, ::remoteTrack) {
-            // caiu: fica na sala, a UI vai tentando voltar (reconnect) e o som avisa
-            if (session === s) { dropSession(); reconnecting = true; cue(up = false) }
+            // caiu: fica na sala, a UI vai tentando voltar (reconnect)
+            if (session === s) { dropSession(); reconnecting = true }
         }
         s.connect()
         session = s; room = r
@@ -128,27 +125,6 @@ internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient()
         // fora da thread da UI: fechar a PeerConnection nativa espera pelas threads do libwebrtc (mais com vídeo a correr)
         if (s != null) closer.launch { s.close() }
         remote.clear()
-    }
-
-    /** Dois tons curtos: subindo = ligação recuperada, descendo = ligação perdida. */
-    override fun cue(up: Boolean) {
-        closer.launch {
-            runCatching {
-                val rate = 22_050f
-                val fmt = AudioFormat(rate, 16, 1, true, false)
-                val tones = if (up) listOf(660.0, 880.0) else listOf(660.0, 440.0)
-                val per = (rate * 0.14).toInt()
-                val pcm = ByteArray(per * tones.size * 2)
-                tones.forEachIndexed { k, f ->
-                    for (i in 0 until per) {
-                        val env = minOf(1.0, i / 300.0, (per - i) / 600.0)  // sobe e desce depressa: sem estalidos
-                        val v = (sin(2 * Math.PI * f * i / rate) * env * 0.35 * Short.MAX_VALUE).toInt()
-                        pcm[(k * per + i) * 2] = v.toByte(); pcm[(k * per + i) * 2 + 1] = (v shr 8).toByte()
-                    }
-                }
-                AudioSystem.getSourceDataLine(fmt).apply { open(fmt); start(); write(pcm, 0, pcm.size); drain(); close() }
-            }
-        }
     }
 
     private fun remoteTrack(track: MediaStreamTrack, added: Boolean) {

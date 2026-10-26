@@ -7,6 +7,8 @@ local.properties
 xcuserdata/
 DerivedData/
 *.xcuserstate
+**/Pods/
+client/iosApp/*.xcworkspace/
 **/.env
 /experimentos/manager/manager
 /experimentos/sfu/sfu
