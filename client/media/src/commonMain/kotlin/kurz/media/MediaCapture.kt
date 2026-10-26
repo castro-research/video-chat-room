@@ -58,6 +58,11 @@ abstract class MediaCapture {
     var micDevices by mutableStateOf<List<Device>>(emptyList()); protected set
     var cameraDevices by mutableStateOf<List<Device>>(emptyList()); protected set
 
+    /** Nome do microfone que o sistema usa como padrão (para a entrada "Padrão do sistema" dizer qual é); null se não se sabe. */
+    var micDefaultName by mutableStateOf<String?>(null); protected set
+    /** Câmara por id -> dá imagem. Sem entrada = ainda a verificar (a UI deixa-a desactivada); false = não dá imagem (tampa fechada, ocupada, sem permissão). */
+    var cameraReady by mutableStateOf<Map<String, Boolean>>(emptyMap()); protected set
+
     /** Dispositivo escolhido; null = o padrão do sistema (na câmara, a primeira). */
     var micDeviceId by mutableStateOf<String?>(null); protected set
     var cameraDeviceId by mutableStateOf<String?>(null); protected set

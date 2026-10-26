@@ -7,6 +7,9 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import kurz.core.AppState
 import kurz.media.Capture
 import kurz.media.MediaCapture
@@ -44,13 +47,28 @@ internal fun peopleIn(room: Room, s: AppState, r: RoomClient): List<Participant>
     return listOf(Participant(r.userId, s.me.name, mic = !s.muted, camera = s.camOn, screen = s.sharing)) + others
 }
 
-/** Liga AppState.roomId à sala real: entra, actualiza os participantes a cada 2 s e sai; falhou ou caiu = volta para fora da sala. */
+/**
+ * Liga AppState.roomId à sala real: entra, actualiza os participantes a cada 2 s e sai. Se a ligação ao SFU cai fica na sala e tenta
+ * voltar a cada 2 s (a UI mostra "a reconectar" e o desktop toca um som); só desiste, e sai, passados 30 s sem conseguir.
+ * Falhou a primeira entrada ou o utilizador saiu = volta para fora da sala.
+ */
 @Composable
 fun RoomSync(s: AppState, r: RoomClient) {
     LaunchedEffect(s.roomId) {
         val id = s.roomId ?: return@LaunchedEffect
         try {
-            if (r.join(s.managerUrl, id, s.me.name)) while (r.room != null) { delay(2_000); r.poll(s.managerUrl) }
+            if (r.join(s.managerUrl, id, s.me.name)) {
+                var lostSince: TimeMark? = null
+                while (r.room != null) {
+                    delay(2_000)
+                    if (!r.reconnecting) { lostSince = null; r.poll(s.managerUrl); continue }
+                    val since = lostSince ?: TimeSource.Monotonic.markNow().also { lostSince = it }
+                    if (!r.reconnect(s.managerUrl, id, s.me.name) && since.elapsedNow() > 30.seconds) {
+                        r.notice = "Sem ligação ao servidor há mais de 30 s. Saíste da sala."
+                        r.leave()
+                    }
+                }
+            }
             if (s.roomId == id) s.leaveVoice()
         } finally {
             r.leave()

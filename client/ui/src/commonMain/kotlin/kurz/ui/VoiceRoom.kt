@@ -66,6 +66,7 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
             Text(title, color = p.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             s.roomId?.let { Text("  ·  código $it", color = p.textFaint, fontSize = 12.sp) }
             Text("  ·  ${people.size} ${if (people.size == 1) "pessoa ligada" else "pessoas ligadas"}", color = p.textFaint, fontSize = 12.sp)
+            if (rooms.reconnecting) Text("  ·  a reconectar…", color = p.idle, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.border))
         // grelha; ao tocar num mosaico (pessoa ou partilha) ele fica em destaque e os outros ficam numa fila por baixo; tocar no destacado volta à grelha
@@ -113,10 +114,10 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
         cap.notice?.let { Notice(it) { cap.notice = null } }
         Row(Modifier.fillMaxWidth().height(80.dp), Arrangement.Center, Alignment.CenterVertically) {
             Ctl(if (s.muted) Icons.Outlined.MicOff else Icons.Outlined.Mic, "Microfone", !s.muted) { s.muted = !s.muted }
-            DeviceMenu("microfone", cap.micDevices, cap.micDeviceId, "Padrão do sistema", cap::refreshDevices) { cap.selectMic(it) }
+            DeviceMenu("microfone", cap.micDevices, cap.micDeviceId, "Padrão do sistema", cap::refreshDevices, defaultDetail = cap.micDefaultName) { cap.selectMic(it) }
             Spacer(Modifier.width(12.dp))
             Ctl(if (s.camOn) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff, "Câmara", s.camOn) { s.camOn = !s.camOn }
-            DeviceMenu("câmara", cap.cameraDevices, cap.cameraDeviceId ?: cap.cameraDevices.firstOrNull()?.id, null, cap::refreshDevices) { it?.let(cap::selectCamera) }
+            DeviceMenu("câmara", cap.cameraDevices, cap.cameraDeviceId, null, cap::refreshDevices, ready = { cap.cameraReady[it.id] }) { it?.let(cap::selectCamera) }
             Spacer(Modifier.width(12.dp))
             ShareControl(s, cap)
             Spacer(Modifier.width(12.dp))
@@ -134,9 +135,16 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
     }
 }
 
-/** Seta ao lado do botão: abre a lista de dispositivos. [defaultLabel] = entrada "padrão do sistema" (null se não houver). Sem dispositivos não aparece. */
+/**
+ * Seta ao lado do botão: abre a lista de dispositivos, com uma bolinha no escolhido. [defaultLabel] = entrada "padrão do sistema" (null se não houver),
+ * com [defaultDetail] (o dispositivo que o sistema usa) por baixo. [ready]: null = a verificar, false = não dá; ambos ficam desactivados com o motivo.
+ * Sem dispositivos não aparece.
+ */
 @Composable
-private fun DeviceMenu(what: String, devices: List<Device>, selected: String?, defaultLabel: String?, onOpen: () -> Unit, onPick: (String?) -> Unit) {
+private fun DeviceMenu(
+    what: String, devices: List<Device>, selected: String?, defaultLabel: String?, onOpen: () -> Unit,
+    defaultDetail: String? = null, ready: (Device) -> Boolean? = { true }, onPick: (String?) -> Unit,
+) {
     if (devices.isEmpty()) return
     var open by remember { mutableStateOf(false) }
     Box {
@@ -144,14 +152,27 @@ private fun DeviceMenu(what: String, devices: List<Device>, selected: String?, d
             Icon(Icons.Outlined.KeyboardArrowUp, "Escolher $what", Modifier.size(16.dp), tint = p.textMuted)
         }
         DropdownMenu(open, { open = false }, containerColor = p.sidebar) {
-            @Composable fun entry(id: String?, label: String) = DropdownMenuItem(
-                text = { Text(label, color = p.text, fontSize = 13.sp, maxLines = 1) },
-                leadingIcon = { Icon(Icons.Outlined.Check, null, Modifier.size(16.dp), tint = if (id == selected) p.accent else Color.Transparent) },
+            @Composable fun entry(id: String?, label: String, detail: String?, ok: Boolean?) = DropdownMenuItem(
+                enabled = ok == true,
+                text = {
+                    Column(Modifier.widthIn(min = 220.dp, max = 320.dp)) {
+                        Text(label, color = if (ok == true) p.text else p.textFaint, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        (if (ok == null) "a verificar…" else if (!ok) "sem imagem" else detail)?.let { Text(it, color = p.textFaint, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    }
+                },
+                trailingIcon = { Radio(id == selected) },
                 onClick = { open = false; onPick(id) },
             )
-            defaultLabel?.let { entry(null, it) }
-            devices.forEach { entry(it.id, it.name) }
+            defaultLabel?.let { entry(null, it, defaultDetail, true) }
+            devices.forEach { entry(it.id, it.name, null, ready(it)) }
         }
+    }
+}
+
+@Composable
+private fun Radio(on: Boolean) {
+    Box(Modifier.size(18.dp).border(2.dp, if (on) p.accent else p.textFaint, CircleShape), Alignment.Center) {
+        if (on) Box(Modifier.size(9.dp).background(p.accent, CircleShape))
     }
 }
 

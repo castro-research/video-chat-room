@@ -62,7 +62,7 @@ fun ChannelSidebar(s: AppState, modifier: Modifier = Modifier) {
         (s.voiceChannel?.name ?: s.roomId?.let { shownRoom(s, rooms)?.name ?: it })?.let { name ->
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp).background(p.input, RoundedCornerShape(8.dp)).padding(10.dp),
                 Arrangement.spacedBy(8.dp)) {
-                Text("Voz ligada · $name", color = p.online, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (rooms.reconnecting) "A reconectar · $name" else "Voz ligada · $name", color = if (rooms.reconnecting) p.idle else p.online, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) {
                     if (!s.showVoice || compact) Text("Ver sala", Modifier.weight(1f).rowClick(shape = RoundedCornerShape(6.dp)) { s.openVoiceRoom() }.padding(vertical = 6.dp),
                         color = p.text, fontSize = 12.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)

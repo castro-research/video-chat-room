@@ -29,7 +29,7 @@ compose.desktop {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Kurz Community"
             // o runtime empacotado é uma JVM reduzida: sem java.net.http o HttpClient das salas não existe (resultado de :app:suggestRuntimeModules)
-            modules("java.instrument", "java.net.http", "jdk.unsupported")
+            modules("java.instrument", "java.net.http", "java.prefs", "jdk.unsupported")
             macOS {
                 iconFile.set(project.file("icons/icon.icns"))
                 bundleID = "app.kurz.client"

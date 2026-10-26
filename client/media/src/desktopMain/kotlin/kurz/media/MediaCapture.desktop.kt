@@ -21,6 +21,7 @@ import dev.onvoid.webrtc.media.audio.AudioOptions
 import dev.onvoid.webrtc.media.video.VideoBufferConverter
 import dev.onvoid.webrtc.media.video.VideoCaptureCapability
 import dev.onvoid.webrtc.media.video.VideoDesktopSource
+import dev.onvoid.webrtc.media.video.VideoDevice
 import dev.onvoid.webrtc.media.video.VideoDeviceSource
 import dev.onvoid.webrtc.media.video.VideoFrame
 import dev.onvoid.webrtc.media.video.VideoTrack
@@ -34,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -42,6 +44,8 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.Image as SkImage
 import org.jetbrains.skia.ImageInfo
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 @Composable
 actual fun rememberMediaCapture(): MediaCapture {
@@ -49,6 +53,11 @@ actual fun rememberMediaCapture(): MediaCapture {
     DisposableEffect(c) { onDispose(c::release) }
     return c
 }
+
+/** Microfones que não são microfones de ninguém (dispositivos virtuais de apps de chamada e agregados): ficam fora da lista. */
+private val virtualAudio = Regex("aggregate device|microsoft teams audio|zoom ?audio ?device|blackhole|soundflower|loopback", RegexOption.IGNORE_CASE)
+/** Câmaras virtuais: só entram como escolha automática se não houver nenhuma real. */
+private val virtualCamera = Regex("virtual|obs", RegexOption.IGNORE_CASE)
 
 /** O AudioDeviceModule é nosso (e não o interno da fábrica) para poder escolher o microfone com setRecordingDevice. */
 internal val adm by lazy { AudioDeviceModule() }
@@ -81,10 +90,18 @@ internal class DesktopCapture : MediaCapture() {
         onTrack?.invoke(source, track)
     }
 
+    // Escolhas lembradas entre arranques: o último microfone escolhido e a última câmara que deu imagem.
+    private val prefs = java.util.prefs.Preferences.userNodeForPackage(DesktopCapture::class.java)
+    private fun pref(key: String) = runCatching { prefs.get(key, null) }.getOrNull()
+    private fun save(key: String, value: String?) { runCatching { if (value == null) prefs.remove(key) else prefs.put(key, value); prefs.flush() } }
+    init { cameraDeviceId = pref("camera"); micDeviceId = pref("mic") }
+
     override fun refreshDevices() {
         scope.launch {
-            micDevices = MediaDevices.getAudioCaptureDevices().sortedBy { it.name }.map { Device(it.descriptor, it.name) }
+            micDefaultName = runCatching { MediaDevices.getDefaultAudioCaptureDevice()?.name }.getOrNull()
+            micDevices = MediaDevices.getAudioCaptureDevices().filter { it.descriptor == micDeviceId || !virtualAudio.containsMatchIn(it.name) }.sortedBy { it.name }.map { Device(it.descriptor, it.name) }
             cameraDevices = videoDevices().map { Device(it.descriptor, it.name) }
+            probeCameras()
         }
     }
 
@@ -101,7 +118,7 @@ internal class DesktopCapture : MediaCapture() {
                 if (live) adm.stopRecording()
                 adm.setRecordingDevice(dev)
                 if (live) { adm.initRecording(); adm.startRecording() }
-            }.onFailure { micDeviceId = previous; notice = Msg.NO_MIC_SWITCH }
+            }.onSuccess { save("mic", id) }.onFailure { micDeviceId = previous; notice = Msg.NO_MIC_SWITCH }
         }
     }
 
@@ -110,7 +127,10 @@ internal class DesktopCapture : MediaCapture() {
         mic = Capture.Starting
         val track = withContext(Dispatchers.IO) {
             runCatching {
-                check(MediaDevices.getAudioCaptureDevices().isNotEmpty())
+                val devices = MediaDevices.getAudioCaptureDevices()
+                check(devices.isNotEmpty())
+                // o microfone lembrado (o ADM novo começa no padrão); se já não existe, volta ao padrão
+                micDeviceId?.let { id -> devices.firstOrNull { it.descriptor == id }?.let(adm::setRecordingDevice) ?: run { micDeviceId = null } }
                 val opts = AudioOptions().apply { echoCancellation = true; noiseSuppression = true; autoGainControl = true; highpassFilter = true }
                 rtc.createAudioTrack("mic", rtc.createAudioSource(opts))
             }.getOrNull()
@@ -126,6 +146,8 @@ internal class DesktopCapture : MediaCapture() {
     override suspend fun startCamera(): Boolean {
         if (camera != Capture.Off) return camera == Capture.On
         camera = Capture.Starting
+        stopProbing()  // a câmara não pode estar aberta pela verificação
+        triedCameras.clear()
         val src = openCamera()
         if (src == null) { camera = Capture.Off; notice = Msg.NO_CAMERA_DEVICE; return false }
         cameraSource = src
@@ -140,30 +162,43 @@ internal class DesktopCapture : MediaCapture() {
     private fun videoDevices() = MediaDevices.getVideoCaptureDevices().sortedBy { it.name }
 
     private var cameraName = ""
+    private var liveCameraId: String? = null
+    private val triedCameras = ConcurrentHashMap.newKeySet<String>()  // descritores já abertos neste arranque (para a vez seguinte não repetir)
 
-    /** Sem imagens ao fim de 4 s: câmara ocupada, tampa fechada ou permissão negada. Pára e diz para escolher outra. */
+    /** Por onde começar: as que já falharam ficam para o fim; depois a escolhida/lembrada, as reais antes das virtuais (OBS) e as vistas a funcionar antes das por verificar. */
+    private fun candidates() = videoDevices().sortedWith(compareBy({ cameraReady[it.descriptor] == false }, { it.descriptor != cameraDeviceId }, { virtualCamera.containsMatchIn(it.name) }, { cameraReady[it.descriptor] != true }))
+
+    /** Espera até 4 s por imagens: se chegam, lembra a câmara; se não (ocupada, tampa fechada, sem permissão) passa à seguinte, e só avisa quando já não há mais. */
     private fun watchCamera(src: VideoDeviceSource) {
+        val id = liveCameraId
         scope.launch {
-            delay(4_000)
-            if (cameraSource === src && cameraFrames.image == null) {
-                stopCamera()
-                notice = "A câmara \"$cameraName\" não dá imagem (ocupada, tampa fechada ou sem permissão). Escolhe outra na seta ao lado do botão."
+            repeat(8) {
+                delay(500)
+                if (cameraSource !== src) return@launch
+                if (cameraFrames.image != null) { id?.let { cameraReady = cameraReady + (it to true); save("camera", it) }; return@launch }
             }
+            if (cameraSource !== src) return@launch
+            id?.let { cameraReady = cameraReady + (it to false) }
+            if (candidates().any { it.descriptor !in triedCameras }) swapCamera { stopCamera() }
+            else { stopCamera(); notice = "A câmara \"$cameraName\" não dá imagem (ocupada, tampa fechada ou sem permissão). Escolhe outra na seta ao lado do botão." }
         }
     }
 
-    /** Abre a câmara escolhida (ou a primeira); null se não houver ou não abrir. */
+    /** Abre a primeira câmara possível que ainda não foi tentada (ver [candidates]); null se não houver ou nenhuma abrir. */
     private suspend fun openCamera() = withContext(Dispatchers.IO) {
-        val all = videoDevices()
-        val dev = all.firstOrNull { it.descriptor == cameraDeviceId } ?: all.firstOrNull() ?: return@withContext null
-        cameraName = dev.name
-        runCatching {
-            VideoDeviceSource().apply {
-                setVideoCaptureDevice(dev)
-                setVideoCaptureCapability(VideoCaptureCapability(1280, 720, 30))  // o módulo escolhe o formato mais próximo
-                start()
-            }
-        }.getOrNull()
+        for (dev in candidates()) {
+            if (!triedCameras.add(dev.descriptor)) continue
+            val src = runCatching {
+                VideoDeviceSource().apply {
+                    setVideoCaptureDevice(dev)
+                    setVideoCaptureCapability(VideoCaptureCapability(1280, 720, 30))  // o módulo escolhe o formato mais próximo
+                    start()
+                }
+            }.getOrNull() ?: continue
+            cameraName = dev.name; liveCameraId = dev.descriptor; cameraDeviceId = dev.descriptor
+            return@withContext src
+        }
+        null
     }
 
     // Troca em quente: abre a nova câmara antes de largar a velha e republica a track "camera" (o botão não passa por Off).
@@ -171,12 +206,18 @@ internal class DesktopCapture : MediaCapture() {
         if (id == cameraDeviceId) return
         val previous = cameraDeviceId
         cameraDeviceId = id
-        if (camera != Capture.On) return
+        cameraReady = cameraReady - id  // esquece uma falha antiga: a escolha do utilizador é tentada primeiro
+        triedCameras.clear()
+        if (camera == Capture.On) swapCamera { cameraDeviceId = previous }
+    }
+
+    private fun swapCamera(revert: () -> Unit) {
         scope.launch {
+            stopProbing()
             val src = openCamera()
             if (src == null || camera != Capture.On) {  // não abriu, ou o utilizador desligou entretanto
                 src?.stop()
-                if (src == null) { cameraDeviceId = previous; notice = Msg.NO_CAMERA_DEVICE }
+                if (src == null) { revert(); notice = Msg.NO_CAMERA_DEVICE }
                 return@launch
             }
             val old = cameraSource
@@ -195,6 +236,44 @@ internal class DesktopCapture : MediaCapture() {
         put("camera", null)
         cameraSource?.stop()
         cameraSource = null; camera = Capture.Off; cameraFrames.clear()
+    }
+
+    // Verificação: abre cada câmara um instante e vê se chegam imagens, para o menu deixar desactivadas as que não dão (a do MacBook
+    // com a tampa fechada, por exemplo). Resultado vale 2 min; a câmara em uso conta como boa e não se mexe nela.
+    private var probeJob: Job? = null
+    private val probedAt = ConcurrentHashMap<String, Long>()
+
+    private suspend fun stopProbing() { probeJob?.cancelAndJoin(); probeJob = null }
+
+    private fun probeCameras() {
+        probeJob?.cancel()
+        probeJob = scope.launch {
+            for (dev in videoDevices()) {
+                ensureActive()
+                val id = dev.descriptor
+                if (camera != Capture.Off && id == liveCameraId) { cameraReady = cameraReady + (id to true); continue }
+                if (System.currentTimeMillis() - (probedAt[id] ?: 0) < 120_000) continue
+                val ok = probe(dev)
+                probedAt[id] = System.currentTimeMillis()
+                cameraReady = cameraReady + (id to ok)
+            }
+        }
+    }
+
+    private suspend fun probe(dev: VideoDevice): Boolean {
+        val src = withContext(Dispatchers.IO) {
+            runCatching { VideoDeviceSource().apply { setVideoCaptureDevice(dev); setVideoCaptureCapability(VideoCaptureCapability(640, 480, 15)); start() } }.getOrNull()
+        } ?: return false
+        val frames = AtomicInteger()
+        val track = rtc.createVideoTrack("probe", src)
+        val sink = VideoTrackSink { frames.incrementAndGet() }
+        track.addSink(sink)
+        try {
+            repeat(10) { if (frames.get() == 0) delay(250) }
+            return frames.get() > 0
+        } finally {
+            track.removeSink(sink); src.stop()
+        }
     }
 
     override val canPickScreen get() = true

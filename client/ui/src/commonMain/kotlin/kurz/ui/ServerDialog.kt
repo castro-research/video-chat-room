@@ -62,7 +62,7 @@ fun ServerDialog(s: AppState) {
                         Icon(Icons.Outlined.Check, if (on) "Ligado" else null, Modifier.size(16.dp), tint = if (on) p.accent else Color.Transparent)
                         Text(serverLabel(url), Modifier.weight(1f), color = if (on) p.text else p.textMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         HealthDot(s, url)
-                        if (url == s.servers.first()) Text("de fábrica", color = p.textFaint, fontSize = 11.sp, modifier = Modifier.padding(end = 8.dp))
+                        if (url == s.servers.first()) Spacer(Modifier.width(8.dp))
                         else IconBtn(Icons.Outlined.Close, "Remover", { s.removeServer(url) }, size = 28.dp, iconSize = 14.dp)
                     }
                 }

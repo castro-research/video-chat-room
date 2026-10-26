@@ -56,6 +56,8 @@ abstract class RoomClient {
     var listError by mutableStateOf<String?>(null); protected set
     /** Sala ligada, com os participantes da última consulta; volta a null se a ligação ao SFU cair. */
     var room by mutableStateOf<Room?>(null); protected set
+    /** A ligação ao SFU caiu e está a tentar voltar: [room] mantém-se (a UI fica na sala) até [reconnect] conseguir ou a UI desistir com [leave]. */
+    var reconnecting by mutableStateOf(false); protected set
     /** Última falha de uma acção, em português, para mostrar ao utilizador. */
     var notice by mutableStateOf<String?>(null)
 
@@ -65,9 +67,13 @@ abstract class RoomClient {
     abstract suspend fun create(base: String, name: String): Room?
     /** Entra na sala [id] e liga a mídia; devolve false (com [notice]) se falhar. */
     abstract suspend fun join(base: String, id: String, name: String): Boolean
+    /** Volta a entrar na sala [id] depois de a ligação cair, sem mexer em [room] nem avisar de falhas; true se voltou. */
+    open suspend fun reconnect(base: String, id: String, name: String): Boolean = false
     /** Actualiza os participantes de [room]. */
     abstract suspend fun poll(base: String)
     abstract fun leave()
+    /** Som curto de estado da ligação: [up] = recuperou, senão caiu. Só o desktop toca. */
+    protected open fun cue(up: Boolean) {}
 
     /** Último frame da track remota `<userId>:<source>`; nada enquanto não houver. */
     @Composable abstract fun RemoteVideo(userId: String, source: String, modifier: Modifier)
