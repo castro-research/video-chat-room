@@ -52,8 +52,16 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import WebRTC.RTCDefaultVideoDecoderFactory
+import WebRTC.RTCDefaultVideoEncoderFactory
+import WebRTC.RTCVideoCodecInfo
 
-private val http = HttpClient(Darwin) { install(WebSockets); install(io.ktor.client.plugins.HttpTimeout) }
+private val http = HttpClient(Darwin) {
+    // o URLSession tenta QUIC/HTTP3 primeiro e o WebSocket não passa em h3 atrás do Cloudflare ("Socket is not connected"): força TCP
+    engine { configureRequest { setAssumesHTTP3Capable(false) } }
+    install(WebSockets)
+    install(io.ktor.client.plugins.HttpTimeout)
+}
 private val socketCloser = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 @Composable
@@ -124,8 +132,9 @@ private class IosRooms(private val capture: IosCapture?) : RoomClient() {
         val currentRoom = manager.room(id)
         val voice = manager.join(id, userId, name)
         lateinit var next: IosMediaSession
-        next = IosMediaSession(voice, userId, ::onRemoteTrack) {
+        next = IosMediaSession(voice, userId, ::onRemoteTrack) { reason ->
             if (session === next) {
+                notice = reason
                 session = null
                 capture?.onTrack = null
                 remote.clear()
@@ -181,7 +190,7 @@ private class IosMediaSession(
     private val voice: VoiceSession,
     private val userId: String,
     private val onRemote: (MediaStreamTrack, Boolean, String, String) -> Unit,
-    private val onClosed: () -> Unit,
+    private val onClosed: (String) -> Unit,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val ops = Channel<suspend () -> Unit>(Channel.UNLIMITED)
@@ -314,7 +323,7 @@ private class IosMediaSession(
         sfuError = reason
         joined.completeExceptionally(IllegalStateException(reason))
         close()
-        onClosed()
+        onClosed(reason)
     }
 
     private suspend fun send(text: String) {
@@ -353,6 +362,7 @@ private class IosMediaSession(
         }
     }
 
+    @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
     private suspend fun onOffer(sdp: String) {
         if (peer.signalingState != SignalingState.Stable) {
             peer.setLocalDescription(SessionDescription(SessionDescriptionType.Rollback, ""))
@@ -362,6 +372,8 @@ private class IosMediaSession(
         flushCandidates()
         val answer = peer.createAnswer(OfferAnswerOptions())
         peer.setLocalDescription(answer)
+        println("KURZ-CODECS dec=${RTCDefaultVideoDecoderFactory().supportedCodecs().map { (it as RTCVideoCodecInfo).name }} enc=${RTCDefaultVideoEncoderFactory().supportedCodecs().map { (it as RTCVideoCodecInfo).name }}")  // TEMPORÁRIO
+        println("KURZ-SDP offer:\n$sdp\nKURZ-SDP answer:\n${answer.sdp}")  // TEMPORÁRIO: diagnóstico do codec; remover
         send(mediaFrame("answer", "sdp" to answer.sdp))
     }
 

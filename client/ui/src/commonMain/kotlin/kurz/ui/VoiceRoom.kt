@@ -3,6 +3,7 @@ package kurz.ui
 import kurz.core.*
 import kurz.media.Capture
 import kurz.media.Device
+import kurz.media.MAX_VOLUME
 import kurz.media.MediaCapture
 import kurz.media.Participant
 
@@ -19,11 +20,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ScreenShare
+import androidx.compose.material.icons.automirrored.outlined.VolumeOff
 import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 @Composable
 fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
@@ -219,11 +223,33 @@ private fun Tile(s: AppState, u: User, otherSpeaking: Boolean, part: Participant
                 .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
         )
         if (micOn) Box(Modifier.align(Alignment.BottomStart).fillMaxWidth(cap.micLevel).height(3.dp).background(p.accent))
+        if (!me && part != null) VolumeControl(u.id, Modifier.align(Alignment.TopStart).padding(10.dp))
         if (muted) Icon(
             Icons.Outlined.MicOff, null, tint = p.danger,
             modifier = Modifier.align(Alignment.TopEnd).padding(10.dp).size(24.dp).clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.55f)).padding(4.dp),
         )
+    }
+}
+
+/** Botão no mosaico de um participante que abre um menu com o volume com que o ouves (só para ti), de 0 a 200 %. */
+@Composable
+private fun VolumeControl(userId: String, modifier: Modifier) {
+    val rooms = LocalRooms.current
+    if (!rooms.canSetVolume) return
+    var open by remember { mutableStateOf(false) }
+    val v = rooms.volume(userId)
+    Box(modifier) {
+        Icon(
+            if (v == 0f) Icons.AutoMirrored.Outlined.VolumeOff else Icons.AutoMirrored.Outlined.VolumeUp, "Volume", tint = Color.White,
+            modifier = Modifier.size(24.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).rowClick(shape = CircleShape) { open = true }.padding(4.dp),
+        )
+        DropdownMenu(open, { open = false }, containerColor = p.sidebar) {
+            Row(Modifier.width(220.dp).padding(horizontal = 12.dp), Arrangement.spacedBy(10.dp), Alignment.CenterVertically) {
+                Slider(v, { rooms.setVolume(userId, it) }, Modifier.weight(1f), valueRange = 0f..MAX_VOLUME)
+                Text("${(v * 100).roundToInt()}%", color = p.text, fontSize = 12.sp, modifier = Modifier.width(40.dp))
+            }
+        }
     }
 }
 

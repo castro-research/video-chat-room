@@ -27,7 +27,7 @@ Per-endpoint rules and error codes are in it. This file has what a schema can't 
 4. When someone else starts or stops publishing, the server sends an `offer`; the client answers. On a collision (both
    offer at once) the client is the polite peer: it rolls back and answers the server's offer.
 5. Every forwarded track has msid stream id = the publisher's user id and track id = `<userId>:<source>`
-   (`mic`, `camera`, `screen`). That is how a client attaches a remote track to a tile.
+   (`mic`, `camera`, `screen`, `screenAudio`). That is how a client attaches a remote track to a tile.
 6. Mute, camera and share: stop or start the track and send `voice.state.set` on the gateway. Everyone receives `voice.state`.
 7. Leave with `POST .../voice/leave` or by closing the media socket.
 

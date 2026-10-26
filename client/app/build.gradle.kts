@@ -18,6 +18,17 @@ kotlin {
     }
 }
 
+// Helper nativo do áudio do sistema (ScreenCaptureKit, só macOS): compila para build/appres/macos, que o Compose empacota como recurso.
+val audioHelper = tasks.register<Exec>("buildAudioHelper") {
+    val src = file("native/kurz-audio/main.swift")
+    val out = layout.buildDirectory.file("appres/macos/kurz-audio")
+    onlyIf { System.getProperty("os.name").startsWith("Mac") }
+    inputs.file(src); outputs.file(out)
+    doFirst { out.get().asFile.parentFile.mkdirs() }
+    commandLine("swiftc", "-O", src.path, "-o", out.get().asFile.path)
+}
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(audioHelper) }
+
 compose.desktop {
     application {
         mainClass = "MainKt"
@@ -26,6 +37,7 @@ compose.desktop {
         // classes do webrtc-java; voltar a ligá-lo pede regras -keep de dev.onvoid.webrtc.** e uma prova de que a mídia funciona.
         buildTypes.release.proguard { isEnabled.set(false) }
         nativeDistributions {
+            appResourcesRootDir.set(layout.buildDirectory.dir("appres"))
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Kurz Community"
             // o runtime empacotado é uma JVM reduzida: sem java.net.http o HttpClient das salas não existe (resultado de :app:suggestRuntimeModules)

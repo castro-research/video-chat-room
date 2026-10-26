@@ -61,6 +61,14 @@ abstract class RoomClient {
     /** Última falha de uma acção, em português, para mostrar ao utilizador. */
     var notice by mutableStateOf<String?>(null)
 
+    /** Volume com que se ouve cada participante, 0..[MAX_VOLUME] (1 = normal); só vale para quem se mexeu. */
+    var volumes by mutableStateOf<Map<String, Float>>(emptyMap()); protected set
+    fun volume(userId: String) = volumes[userId] ?: 1f
+    /** Muda o volume de [userId] só para este cliente (voz e áudio da partilha). */
+    open fun setVolume(userId: String, v: Float) {}
+    /** A plataforma sabe mudar o volume de cada participante. */
+    open val canSetVolume get() = false
+
     abstract suspend fun list(base: String)
     /** O manager em [base] responde a `GET /healthz`. Nunca lança: qualquer falha é false. */
     abstract suspend fun ping(base: String): Boolean
@@ -76,6 +84,8 @@ abstract class RoomClient {
     /** Último frame da track remota `<userId>:<source>`; nada enquanto não houver. */
     @Composable abstract fun RemoteVideo(userId: String, source: String, modifier: Modifier)
 }
+
+const val MAX_VOLUME = 2f
 
 /** Android e iOS: compila a parte comum, mas sem mídia real. */
 class UnsupportedRooms : RoomClient() {

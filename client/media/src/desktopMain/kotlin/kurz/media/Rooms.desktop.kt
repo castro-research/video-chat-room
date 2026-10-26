@@ -28,6 +28,7 @@ import dev.onvoid.webrtc.RTCSessionDescription
 import dev.onvoid.webrtc.RTCSignalingState
 import dev.onvoid.webrtc.SetSessionDescriptionObserver
 import dev.onvoid.webrtc.media.MediaStreamTrack
+import dev.onvoid.webrtc.media.audio.AudioTrack
 import dev.onvoid.webrtc.media.video.VideoTrack
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -69,6 +70,7 @@ private val closer = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient() {
     private var session: MediaSession? = null
     private val remote = mutableStateMapOf<String, FrameSink>()  // track id `<userId>:<source>` -> frames
+    private val audio = java.util.concurrent.ConcurrentHashMap<String, AudioTrack>()  // track id `<userId>:<source>` -> áudio remoto
 
     private var listedBase = ""
 
@@ -124,11 +126,23 @@ internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient()
         session = null
         // fora da thread da UI: fechar a PeerConnection nativa espera pelas threads do libwebrtc (mais com vídeo a correr)
         if (s != null) closer.launch { s.close() }
-        remote.clear()
+        remote.clear(); audio.clear()
+    }
+
+    override val canSetVolume get() = true
+
+    override fun setVolume(userId: String, v: Float) {
+        val vol = v.coerceIn(0f, MAX_VOLUME)
+        volumes = volumes + (userId to vol)
+        audio.forEach { (id, t) -> if (id.substringBefore(':') == userId) t.setVolume(vol.toDouble()) }
     }
 
     private fun remoteTrack(track: MediaStreamTrack, added: Boolean) {
-        if (track !is VideoTrack) return  // o áudio remoto toca sozinho pelo AudioDeviceModule
+        if (track is AudioTrack) {  // toca sozinho pelo AudioDeviceModule; aqui só se ajusta o volume
+            if (added) { audio[track.id] = track; track.setVolume(volume(track.id.substringBefore(':')).toDouble()) } else audio.remove(track.id)
+            return
+        }
+        if (track !is VideoTrack) return
         remote.remove(track.id)?.let(track::removeSink)
         if (added) remote[track.id] = FrameSink().also(track::addSink)
     }

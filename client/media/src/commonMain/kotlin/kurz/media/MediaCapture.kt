@@ -77,6 +77,13 @@ abstract class MediaCapture {
     /** Miniatura de cada [screenSources] por id; chegam uma a uma depois de [refreshScreenSources] (as que o sistema não dá ficam de fora). */
     var screenThumbs by mutableStateOf<Map<String, ImageBitmap>>(emptyMap()); protected set
 
+    /** A plataforma sabe juntar o áudio do sistema à partilha de ecrã (macOS). */
+    open val canShareAudio get() = false
+    /** Escolha do utilizador: partilhar também o áudio do sistema (só conta com [canShareAudio]). */
+    var screenAudio by mutableStateOf(false); protected set
+    /** Liga/desliga o áudio do sistema; com a partilha ligada vale já. */
+    open fun selectScreenAudio(on: Boolean) {}
+
     open fun refreshDevices() {}
     open fun refreshScreenSources() {}
     /** Escolhe o que partilhar; com a partilha ligada troca em quente. */
@@ -120,6 +127,7 @@ internal object Msg {
     const val NO_CAMERA = "Sem acesso à câmara. Ativa-a nas definições do sistema."
     const val NO_CAMERA_DEVICE = "Não foi encontrada nenhuma câmara."
     const val NO_SCREEN = "Não foi possível partilhar o ecrã neste dispositivo."
+    const val NO_SCREEN_AUDIO = "Não foi possível partilhar o áudio do sistema. Confirma a permissão de gravação do ecrã (macOS 13 ou mais recente)."
 }
 
 /** RMS de [n] amostras PCM de 16 bits, em 0..1 da escala total. */

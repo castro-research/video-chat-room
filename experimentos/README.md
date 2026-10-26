@@ -61,7 +61,7 @@ O SFU rejeita assinatura inválida, expirado ou `jti` já usado: fecha o WebSock
 
 - `GET /v1/media` (WebSocket, 8081): protocolo do contrato. Primeiro frame `join {token}` em até 10 s.
   Sala é criada no primeiro `join`; some quando o último sai.
-- Cada track encaminhada chega ao assinante com **msid stream id = userId do publicador** e **track id = `<userId>:<source>`** (`mic`, `camera`, `screen`).
+- Cada track encaminhada chega ao assinante com **msid stream id = userId do publicador** e **track id = `<userId>:<source>`** (`mic`, `camera`, `screen`, `screenAudio`).
 - `GET /internal/rooms/{room}` (8082) -> `200 {participants:[{userId, name, mic, camera, screen}]}`; sala inexistente = `200` com lista vazia.
 - Servidor é o par *impolite*; o cliente é o *polite* (faz rollback em colisão de ofertas).
 - PLI: ao entrar um assinante e a cada ~3 s, o SFU pede keyframe ao publicador; PLI/FIR dos assinantes são repassados.

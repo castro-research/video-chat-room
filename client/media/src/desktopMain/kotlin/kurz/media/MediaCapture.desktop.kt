@@ -18,6 +18,7 @@ import dev.onvoid.webrtc.media.MediaDevices
 import dev.onvoid.webrtc.media.MediaStreamTrack
 import dev.onvoid.webrtc.media.audio.AudioDeviceModule
 import dev.onvoid.webrtc.media.audio.AudioOptions
+import dev.onvoid.webrtc.media.audio.CustomAudioSource
 import dev.onvoid.webrtc.media.video.VideoBufferConverter
 import dev.onvoid.webrtc.media.video.VideoCaptureCapability
 import dev.onvoid.webrtc.media.video.VideoDesktopSource
@@ -44,8 +45,10 @@ import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.Image as SkImage
 import org.jetbrains.skia.ImageInfo
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 
 @Composable
 actual fun rememberMediaCapture(): MediaCapture {
@@ -94,7 +97,7 @@ internal class DesktopCapture : MediaCapture() {
     private val prefs = java.util.prefs.Preferences.userNodeForPackage(DesktopCapture::class.java)
     private fun pref(key: String) = runCatching { prefs.get(key, null) }.getOrNull()
     private fun save(key: String, value: String?) { runCatching { if (value == null) prefs.remove(key) else prefs.put(key, value); prefs.flush() } }
-    init { cameraDeviceId = pref("camera"); micDeviceId = pref("mic") }
+    init { cameraDeviceId = pref("camera"); micDeviceId = pref("mic"); screenAudio = pref("screenAudio") == "1" }
 
     override fun refreshDevices() {
         scope.launch {
@@ -321,22 +324,70 @@ internal class DesktopCapture : MediaCapture() {
         }.getOrNull()
     }
 
+    // Áudio do sistema (só macOS): o helper nativo kurz-audio (ScreenCaptureKit, ver app/native) escreve PCM s16le 48 kHz estéreo
+    // no stdout e uma CustomAudioSource publica-o como a fonte "screenAudio". Segue o ecrã/janela escolhido.
+    private val helper = System.getProperty("compose.application.resources.dir")?.takeIf { System.getProperty("os.name").startsWith("Mac") }
+        ?.let { File(it, "kurz-audio") }?.takeIf { it.isFile && (it.canExecute() || it.setExecutable(true)) }
+    private class SysAudio(val proc: Process)
+    private var sysAudio: SysAudio? = null
+
+    override val canShareAudio get() = helper != null
+
+    override fun selectScreenAudio(on: Boolean) {
+        if (on == screenAudio) return
+        screenAudio = on
+        save("screenAudio", if (on) "1" else "0")
+        if (screen == Capture.On) scope.launch { if (on) startSysAudio() else stopSysAudio() }
+    }
+
+    @Synchronized private fun startSysAudio() {
+        stopSysAudio()
+        val bin = helper ?: return
+        if (!screenAudio || screen != Capture.On) return
+        val pick = screenSourceId
+        val proc = runCatching {
+            ProcessBuilder(bin.path, if (pick?.startsWith("w") == true) "window" else "display", (pick?.drop(1)?.toLongOrNull() ?: 0L).toString(), ProcessHandle.current().pid().toString())
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        }.getOrNull() ?: run { notice = Msg.NO_SCREEN_AUDIO; return }
+        val run = SysAudio(proc).also { sysAudio = it }
+        val src = CustomAudioSource()
+        put("screenAudio", rtc.createAudioTrack("screenAudio", src))
+        thread(isDaemon = true, name = "screen-audio") {
+            val buf = ByteArray(480 * 2 * 2)  // 10 ms
+            var got = false
+            runCatching {
+                val input = proc.inputStream
+                while (input.readNBytes(buf, 0, buf.size) == buf.size) { got = true; src.pushAudio(buf, 16, 48000, 2, 480) }
+            }
+            synchronized(this) {
+                if (sysAudio === run) { stopSysAudio(); if (!got) notice = Msg.NO_SCREEN_AUDIO }  // o helper saiu sozinho
+            }
+        }
+    }
+
+    @Synchronized private fun stopSysAudio() {
+        val a = sysAudio ?: return
+        sysAudio = null
+        a.proc.destroy()
+        put("screenAudio", null)
+    }
+
     override fun selectScreen(id: String) {
         if (id == screenSourceId) return
         val previous = screenSourceId
         screenSourceId = id
-        if (screen == Capture.On) swapScreen { screenSourceId = previous }
+        if (screen == Capture.On) swapScreen(restartAudio = true) { screenSourceId = previous }
     }
 
     override fun selectScreenQuality(q: ScreenQuality) {
         if (q == screenQuality) return
         val previous = screenQuality
         screenQuality = q
-        if (screen == Capture.On) swapScreen { screenQuality = previous }
+        if (screen == Capture.On) swapScreen(restartAudio = false) { screenQuality = previous }
     }
 
     // Troca em quente, como na câmara: abre a nova fonte antes de largar a velha e republica a track "screen"; [revert] desfaz a escolha se não abrir.
-    private fun swapScreen(revert: () -> Unit) {
+    private fun swapScreen(restartAudio: Boolean, revert: () -> Unit) {
         scope.launch {
             val src = openScreen()
             if (src == null || screen != Capture.On) {
@@ -350,6 +401,7 @@ internal class DesktopCapture : MediaCapture() {
             screenSource = src
             put("screen", rtc.createVideoTrack("screen", src).also { it.addSink(screenFrames) })
             old?.stop()
+            if (restartAudio && screenAudio) startSysAudio()
         }
     }
 
@@ -361,11 +413,13 @@ internal class DesktopCapture : MediaCapture() {
         screenSource = src
         put("screen", rtc.createVideoTrack("screen", src).also { it.addSink(screenFrames) })
         screen = Capture.On
+        if (screenAudio) scope.launch { startSysAudio() }
         return true
     }
 
     override fun stopScreen() {
         if (screen == Capture.Off) return
+        stopSysAudio()
         (tracks["screen"] as? VideoTrack)?.removeSink(screenFrames)
         put("screen", null)
         screenSource?.stop()

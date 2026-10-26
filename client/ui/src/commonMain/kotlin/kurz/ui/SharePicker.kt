@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.WebAsset
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -80,6 +81,10 @@ fun SharePicker(s: AppState) {
             }
             QualityRow("Resolução", ScreenResolution.entries, q.resolution, { it.label }) { cap.selectScreenQuality(q.copy(resolution = it)) }
             QualityRow("Quadros", ScreenQuality.fpsOptions, q.fps, { it.toString() }) { cap.selectScreenQuality(q.copy(fps = it)) }
+            if (cap.canShareAudio) Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                Text("Partilhar áudio do sistema", color = p.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Switch(cap.screenAudio, { cap.selectScreenAudio(it) })
+            }
         }
     }
 }

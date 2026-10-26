@@ -821,7 +821,7 @@ components:
           required: [trackId, source]
           properties:
             trackId: { type: string, description: The local track's id (the `a=msid` track id in the SDP). }
-            source: { type: string, enum: [mic, camera, screen] }
+            source: { type: string, enum: [mic, camera, screen, screenAudio] }
 
     MediaOffer:
       type: object

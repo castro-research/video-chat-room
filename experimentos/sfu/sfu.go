@@ -26,7 +26,7 @@ var (
 	errQueueFull = errors.New("send queue full")
 	errPCFailed  = errors.New("peer connection failed")
 	errGone      = errors.New("socket closed")
-	sources      = map[string]bool{"mic": true, "camera": true, "screen": true}
+	sources      = map[string]bool{"mic": true, "camera": true, "screen": true, "screenAudio": true}
 )
 
 // ponytail: um mutex global para salas, peers e publicações; por sala se virar gargalo.
