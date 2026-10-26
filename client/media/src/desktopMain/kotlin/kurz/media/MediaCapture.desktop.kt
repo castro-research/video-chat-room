@@ -266,7 +266,7 @@ internal class DesktopCapture : MediaCapture() {
         } ?: return false
         val frames = AtomicInteger()
         val track = rtc.createVideoTrack("probe", src)
-        val sink = VideoTrackSink { frames.incrementAndGet() }
+        val sink = VideoTrackSink { frame -> frames.incrementAndGet(); frame.release() }
         track.addSink(sink)
         try {
             repeat(10) { if (frames.get() == 0) delay(250) }
@@ -293,7 +293,11 @@ internal class DesktopCapture : MediaCapture() {
                 }.getOrElse { screenSources = listOf(ScreenSource("s0", "Ecrã principal", false)); return@launch }
                 screenSources = found.map { it.third }
                 var shot: ImageBitmap? = null
-                val onFrame = DesktopCaptureCallback { result, frame -> if (result == DesktopCapturer.Result.SUCCESS) shot = frameToImage(frame, 480) }
+                val onFrame = DesktopCaptureCallback { result, frame ->
+                    if (result == DesktopCapturer.Result.SUCCESS) {
+                        try { shot = frameToImage(frame, 480) } finally { frame.release() }
+                    }
+                }
                 screens.start(onFrame); windows.start(onFrame)
                 for ((capturer, source, ui) in found) {
                     ensureActive()
@@ -393,11 +397,15 @@ class FrameSink(private val maxWidth: Int = 640) : VideoTrackSink {
     @Volatile private var last = 0L
 
     override fun onVideoFrame(frame: VideoFrame) {
-        count++
-        val now = System.nanoTime()
-        if (now - last < 66_000_000) return
-        last = now
-        image = frameToImage(frame, maxWidth) ?: return
+        try {
+            count++
+            val now = System.nanoTime()
+            if (now - last < 66_000_000) return
+            last = now
+            image = frameToImage(frame, maxWidth) ?: return
+        } finally {
+            frame.release()
+        }
     }
 
     fun clear() { image = null }
@@ -414,8 +422,12 @@ internal fun frameToImage(frame: VideoFrame, maxWidth: Int): ImageBitmap? {
     if (w <= 0) return null
     val h = (b.height.toLong() * w / b.width).toInt() and 1.inv()
     if (h <= 0) return null
-    val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)  // cópia em memória Java: não tem release
-    val px = ByteArray(w * h * 4)
-    VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
-    return SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
+    val scaled = b.cropAndScale(0, 0, b.width, b.height, w, h)
+    return try {
+        val px = ByteArray(w * h * 4)
+        VideoBufferConverter.convertFromI420(scaled, px, FourCC.ARGB)  // ARGB do libyuv = bytes B,G,R,A
+        SkImage.makeRaster(ImageInfo(w, h, ColorType.BGRA_8888, ColorAlphaType.OPAQUE), px, w * 4).toComposeImageBitmap()
+    } finally {
+        scaled.release()
+    }
 }
