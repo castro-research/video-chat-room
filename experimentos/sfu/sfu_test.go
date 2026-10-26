@@ -176,7 +176,7 @@ func TestSFU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := newServer(testSecret, udp, "")
+	s, err := newServer(testSecret, udp, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

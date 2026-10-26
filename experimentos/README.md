@@ -85,7 +85,7 @@ cd experimentos/manager && KURZ_SECRET=dev SFU_PUBLIC_WS_URL=ws://<LAN>:8081/v1/
 
 - **O SFU não anuncia extensões de cabeçalho RTP** (nem mid/rid nem transport-cc) e limpa as do publicador ao repassar. O libwebrtc numera as extensões de forma diferente do pion e a renegociação falha com `codec collision for header extension id`. Custo: sem TWCC o publicador não estima banda pelo servidor.
 - **1 réplica de SFU**: salas ficam em memória. Para escalar, o manager teria de escolher o SFU da sala.
-- Sem TURN: atrás de NAT simétrico ou fora da rede do nó não conecta.
+- TURN só via Cloudflare Realtime TURN, e só se `TURN_KEY_ID` e `TURN_KEY_API_TOKEN` estiverem em `experimentos/.env`. Com eles, o manager entrega credenciais temporárias no `join` e o SFU sai do ICE lite e aloca relay também, então um cliente de fora conecta sem porta aberta no nó. Sem eles: fora da rede do nó não conecta.
 - Sem simulcast: uma camada de vídeo por publicador (como no contrato 0.1).
 - Android/iOS: continuam compilando, mas sem mídia real (Android: `io.github.webrtc-sdk:android`; iOS: WebRTC.framework via cinterop).
 - Sem autenticação de usuário e API interna sem credencial (isolada só pela porta).

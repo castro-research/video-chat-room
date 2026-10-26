@@ -1,4 +1,4 @@
-# Stack Docker Swarm (nó único). Sobe com ./deploy.sh, que define KURZ_SECRET e PUBLIC_IP.
+# Stack Docker Swarm (nó único). Sobe com ./deploy.sh, que define KURZ_SECRET, PUBLIC_IP e SFU_PUBLIC_WS_URL.
 services:
   sfu:
     image: kurz/sfu:latest
@@ -6,6 +6,9 @@ services:
       KURZ_SECRET: ${KURZ_SECRET:?defina KURZ_SECRET}
       SFU_PUBLIC_IP: ${PUBLIC_IP:?defina PUBLIC_IP}
       SFU_UDP_PORT: "30100"
+      # TURN da Cloudflare (opcional, vem do .env): sem porta aberta no router, a mídia passa pelo relay
+      TURN_KEY_ID: ${TURN_KEY_ID:-}
+      TURN_KEY_API_TOKEN: ${TURN_KEY_API_TOKEN:-}
     ports:
       - { target: 8081, published: 30081, protocol: tcp, mode: host }
       # mesmo número dentro e fora: o candidato ICE anuncia a porta local. mode: host evita o NAT do ingress mesh no UDP.
@@ -21,8 +24,10 @@ services:
     image: kurz/manager:latest
     environment:
       KURZ_SECRET: ${KURZ_SECRET:?defina KURZ_SECRET}
-      SFU_PUBLIC_WS_URL: ws://${PUBLIC_IP:?defina PUBLIC_IP}:30081/v1/media
+      SFU_PUBLIC_WS_URL: ${SFU_PUBLIC_WS_URL:?defina SFU_PUBLIC_WS_URL}
       SFU_INTERNAL_URL: http://sfu:8082 # DNS do Swarm; a 8082 não é publicada
+      TURN_KEY_ID: ${TURN_KEY_ID:-}
+      TURN_KEY_API_TOKEN: ${TURN_KEY_API_TOKEN:-}
     ports:
       - "30080:8080"
     read_only: true

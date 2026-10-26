@@ -31,7 +31,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s, err := newServer([]byte(secret), udp, os.Getenv("SFU_PUBLIC_IP"))
+	s, err := newServer([]byte(secret), udp, os.Getenv("SFU_PUBLIC_IP"),
+		newTurnSource(os.Getenv("TURN_KEY_ID"), os.Getenv("TURN_KEY_API_TOKEN")))
 	if err != nil {
 		log.Fatal(err)
 	}

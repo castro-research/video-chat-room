@@ -24,6 +24,7 @@ import (
 type config struct {
 	secret, sfuPublicWS, sfuInternal string
 	iceServers                       []map[string]any
+	turn                             *turnSource // nil: entrega iceServers fixo
 }
 
 type Room struct {
@@ -212,9 +213,17 @@ func (s *server) join(w http.ResponseWriter, r *http.Request) {
 			"muted": !p.Mic, "camOn": p.Camera, "sharing": p.Screen,
 		})
 	}
+	var ice any = s.cfg.iceServers
+	if s.cfg.turn != nil {
+		if t, err := s.cfg.turn.get(r.Context()); err == nil {
+			ice = t
+		} else {
+			slog.Warn("turn indisponível; entregando ICE_SERVERS", "err", err)
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"media":        map[string]string{"url": s.cfg.sfuPublicWS, "token": tok},
-		"iceServers":   s.cfg.iceServers,
+		"iceServers":   ice,
 		"participants": parts,
 	})
 }
@@ -231,6 +240,7 @@ func main() {
 		secret:      os.Getenv("KURZ_SECRET"),
 		sfuPublicWS: os.Getenv("SFU_PUBLIC_WS_URL"),
 		sfuInternal: getenv("SFU_INTERNAL_URL", "http://localhost:8082"),
+		turn:        newTurnSource(os.Getenv("TURN_KEY_ID"), os.Getenv("TURN_KEY_API_TOKEN")),
 	}
 	if cfg.secret == "" || cfg.sfuPublicWS == "" {
 		slog.Error("KURZ_SECRET e SFU_PUBLIC_WS_URL são obrigatórias")

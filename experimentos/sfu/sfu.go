@@ -32,6 +32,7 @@ var (
 // ponytail: um mutex global para salas, peers e publicações; por sala se virar gargalo.
 type server struct {
 	secret []byte
+	turn   *turnSource // nil: ICE lite, só candidato host
 	api    *webrtc.API
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -92,7 +93,7 @@ type claims struct {
 	jwt.RegisteredClaims
 }
 
-func newServer(secret []byte, udp net.PacketConn, publicIP string) (*server, error) {
+func newServer(secret []byte, udp net.PacketConn, publicIP string, turn *turnSource) (*server, error) {
 	m := &webrtc.MediaEngine{}
 	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
 		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2, SDPFmtpLine: "minptime=10;useinbandfec=1"},
@@ -120,7 +121,10 @@ func newServer(secret []byte, udp net.PacketConn, publicIP string) (*server, err
 	}
 
 	se := webrtc.SettingEngine{}
-	se.SetLite(true) // o cliente controla o ICE; o servidor só responde aos checks
+	// Sem TURN: ICE lite, o cliente controla o ICE e o servidor só responde aos checks.
+	// Com TURN: ICE completo, porque o agente lite não junta candidato relay. O relay é o que deixa um cliente de fora
+	// chegar ao nó sem porta aberta: os dois lados alocam no TURN da Cloudflare com conexões de saída.
+	se.SetLite(turn == nil)
 	se.SetICEUDPMux(webrtc.NewICEUDPMux(nil, udp))
 	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 	se.SetIncludeLoopbackCandidate(true) // permite rodar local em 127.0.0.1
@@ -137,12 +141,35 @@ func newServer(secret []byte, udp net.PacketConn, publicIP string) (*server, err
 	ctx, cancel := context.WithCancelCause(context.Background())
 	return &server{
 		secret: secret,
+		turn:   turn,
 		api:    webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir), webrtc.WithSettingEngine(se)),
 		ctx:    ctx,
 		cancel: cancel,
 		rooms:  map[string]map[string]*peer{},
 		jtis:   map[string]time.Time{},
 	}, nil
+}
+
+// iceServers devolve um único URL TURN sobre UDP (o SettingEngine só usa UDP4; mais URLs = alocações redundantes).
+// Sem TURN ou com falha, nil: o par segue só com o candidato host.
+func (s *server) iceServers(ctx context.Context) []webrtc.ICEServer {
+	if s.turn == nil {
+		return nil
+	}
+	servers, err := s.turn.get(ctx)
+	if err != nil {
+		log.Printf("turn indisponível: %v", err)
+		return nil
+	}
+	for _, is := range servers {
+		for _, u := range is.URLs {
+			if strings.HasPrefix(u, "turn:") && strings.Contains(u, "transport=udp") {
+				return []webrtc.ICEServer{{URLs: []string{u}, Username: is.Username, Credential: is.Credential}}
+			}
+		}
+	}
+	log.Print("turn: nenhum URL turn: sobre UDP na resposta")
+	return nil
 }
 
 func (s *server) publicMux() http.Handler {
@@ -243,7 +270,7 @@ func (s *server) media(w http.ResponseWriter, r *http.Request) {
 		out: make(chan []byte, 256), neg: make(chan struct{}, 1), done: make(chan struct{}),
 		declared: map[string]string{}, pubs: map[string]*pub{},
 	}
-	if p.pc, err = s.api.NewPeerConnection(webrtc.Configuration{}); err != nil {
+	if p.pc, err = s.api.NewPeerConnection(webrtc.Configuration{ICEServers: s.iceServers(ctx)}); err != nil {
 		writeNow(ws, "error", errBody{"internal", err.Error()})
 		_ = ws.Close(websocket.StatusInternalError, "internal")
 		return
@@ -565,7 +592,7 @@ func (p *peer) handle(m msg, pending *bool) error {
 	case "candidate":
 		var d candBody
 		if json.Unmarshal(m.D, &d) != nil || d.Candidate == "" || p.pc.RemoteDescription() == nil {
-			return nil // ICE lite: o endereço do cliente chega pelos próprios checks
+			return nil // ICE lite: o endereço do cliente chega pelos próprios checks; com TURN, o relay do cliente chega aqui
 		}
 		_ = p.pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: d.Candidate, SDPMid: d.SDPMid, SDPMLineIndex: d.SDPMLineIndex})
 	}
