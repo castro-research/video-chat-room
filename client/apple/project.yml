@@ -1,0 +1,85 @@
+name: Kurz
+options:
+  bundleIdPrefix: fyi.kurz
+  postGenCommand: pod install  # o xcodegen reescreve o .xcodeproj e apaga a integração dos Pods (WebRTC fica sem link)
+  deploymentTarget:
+    macOS: "13.0"
+    iOS: "16.0"
+settingGroups:
+  common:
+    SWIFT_VERSION: "5.0"
+    GENERATE_INFOPLIST_FILE: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    ARCHS: arm64
+targets:
+  KurzMac:
+    type: application
+    platform: macOS
+    sources: [Sources/Shared, Sources/macOS]
+    info:
+      path: Sources/macOS/Info.plist
+      properties:
+        CFBundleDisplayName: Kurz
+        CFBundleName: Kurz
+        LSMinimumSystemVersion: "13.0"
+        NSCameraUsageDescription: Para chamadas de vídeo na sala.
+        NSMicrophoneUsageDescription: Para chamadas de voz na sala.
+        NSLocalNetworkUsageDescription: Para ligar ao servidor de chamadas na rede local.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true  # manager http:// e SFU ws:// só em IPs/hosts da LAN; fora da LAN é preciso https/wss
+    settings:
+      groups: [common]
+      base:
+        PRODUCT_NAME: Kurz
+        PRODUCT_BUNDLE_IDENTIFIER: fyi.kurz.community
+        # identidade fixa: com a assinatura ad-hoc o macOS repete o pedido de câmara/mic/ecrã a cada build
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Development: Alexandro Castro (25NPKG5RNX)"
+        DEVELOPMENT_TEAM: 2M46Y776FC
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_ASSETS_CATALOG: NO
+  KurzIOS:
+    type: application
+    platform: iOS
+    sources: [Sources/Shared, Sources/iOS, Resources]
+    info:
+      path: Sources/iOS/Info.plist
+      properties:
+        CFBundleDisplayName: Kurz Community
+        UILaunchScreen: {}
+        CADisableMinimumFrameDurationOnPhone: true
+        NSCameraUsageDescription: Para chamadas de vídeo/voz na sala.
+        NSMicrophoneUsageDescription: Para chamadas de vídeo/voz na sala.
+        NSLocalNetworkUsageDescription: Para ligar ao servidor de chamadas na rede local.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UIBackgroundModes: [audio]
+        UISupportedInterfaceOrientations:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortraitUpsideDown]
+        UISupportedInterfaceOrientations~ipad:
+          [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+    settings:
+      groups: [common]
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: fyi.kurz.community
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  KurzMac:
+    build: {targets: {KurzMac: all}}
+    run: {config: Debug}
+    archive: {config: Release}
+  KurzIOS:
+    build: {targets: {KurzIOS: all}}
+    run: {config: Debug}
+    archive: {config: Release}
+  KurzMac-Release:
+    build: {targets: {KurzMac: all}}
+    run: {config: Release}
+    profile: {config: Release}
+    archive: {config: Release}
+  KurzIOS-Release:
+    build: {targets: {KurzIOS: all}}
+    run: {config: Release}
+    profile: {config: Release}
+    archive: {config: Release}

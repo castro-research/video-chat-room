@@ -17,7 +17,7 @@ Objetivo: usar **áudio, vídeo e compartilhamento de tela** numa sala, com dois
 | Sinalização | WebSocket `/v1/media`, frames de `contract/openapi.yaml` (`join`, `publish`, `offer`, `answer`, `candidate`) | O contrato já existe; o cliente não muda se trocarmos o SFU por LiveKit. |
 | Manager | Go stdlib `net/http` | Sala em memória. `join` devolve o `VoiceSession` do contrato: URL do SFU, token, `iceServers`. |
 | Token | JWT HS256, 60 s, uso único, segredo compartilhado (`KURZ_SECRET`) | Manager assina, SFU valida. Sem chamada entre os dois no caminho quente. |
-| Cliente | Desktop JVM com `webrtc-java` (`dev.onvoid.webrtc`) | Única lib que captura mic/câmera/tela e renderiza na JVM. Android e iOS ficam de fora (ver limites). |
+| Cliente | SwiftUI nativo (Mac, iPhone, iPad) com o WebRTC da Google (`WebRTC-SDK`) | Um projeto só em `client/apple`; lógica e vistas partilhadas. |
 | Codecs | Opus (áudio) + VP8 (vídeo e tela) | É o mínimo que o contrato exige. |
 | Rede | 1 porta UDP única (`ICEUDPMux`) + `NAT1To1` | Dá para publicar uma porta UDP no Swarm (modo `host`). Sem TURN: só funciona na mesma rede ou com o IP do nó alcançável. |
 
@@ -79,7 +79,7 @@ cd experimentos/manager && KURZ_SECRET=dev SFU_PUBLIC_WS_URL=ws://<LAN>:8081/v1/
 ```
 **Docker Swarm** (nó único; `docker swarm init` se ainda não estiver ativo): `experimentos/deploy.sh`. Constrói as imagens `kurz/sfu` e `kurz/manager` e sobe o stack `videochat` (`stack.yml`). O segredo nasce em `experimentos/.env` (fora do git). Manager em `:30080`, SFU em `:30081` (WebSocket) e `:30100/udp`. Parar: `docker stack rm videochat`. O nome `videochat` evita colidir com a rede `kurz_default` de outro projeto Compose.
 
-**Cliente** (`cd client`): `./gradlew :app:run` abre a app; na barra lateral, "Salas" → URL do manager (`http://<LAN>:30080` ou `:8080` local), nome, "Criar sala". Sem janela nem hardware: `./gradlew :app:voiceCheck -Pmanager=http://localhost:8080` entra com 3 clientes sintéticos, troca vídeo/áudio/tela e imprime `OK`.
+**Cliente** (`cd client/apple`): `xcodegen generate`, abrir `Kurz.xcworkspace` e correr o esquema `KurzMac` ou `KurzIOS`; na barra lateral, "Salas" → URL do manager (`http://<LAN>:30080` ou `:8080` local), nome, "Criar sala".
 
 ## Limites conhecidos
 
@@ -87,5 +87,5 @@ cd experimentos/manager && KURZ_SECRET=dev SFU_PUBLIC_WS_URL=ws://<LAN>:8081/v1/
 - **1 réplica de SFU**: salas ficam em memória. Para escalar, o manager teria de escolher o SFU da sala.
 - TURN só via Cloudflare Realtime TURN, e só se `TURN_KEY_ID` e `TURN_KEY_API_TOKEN` estiverem em `experimentos/.env`. Com eles, o manager entrega credenciais temporárias no `join` e o SFU sai do ICE lite e aloca relay também, então um cliente de fora conecta sem porta aberta no nó. Sem eles: fora da rede do nó não conecta.
 - Sem simulcast: uma camada de vídeo por publicador (como no contrato 0.1).
-- Android/iOS: continuam compilando, mas sem mídia real (Android: `io.github.webrtc-sdk:android`; iOS: WebRTC.framework via cinterop).
+- Android: sem cliente (o cliente Kotlin foi removido); só Apple.
 - Sem autenticação de usuário e API interna sem credencial (isolada só pela porta).
