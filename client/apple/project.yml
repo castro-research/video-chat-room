@@ -47,6 +47,7 @@ targets:
       path: Sources/iOS/Info.plist
       properties:
         CFBundleDisplayName: Kurz Community
+        CFBundleName: Kurz Community
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true
         NSCameraUsageDescription: Para chamadas de vídeo/voz na sala.
@@ -62,6 +63,7 @@ targets:
     settings:
       groups: [common]
       base:
+        PRODUCT_NAME: Kurz Community
         PRODUCT_BUNDLE_IDENTIFIER: fyi.kurz.community
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_TEAM: 2M46Y776FC

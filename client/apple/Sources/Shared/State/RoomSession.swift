@@ -108,7 +108,10 @@ final class RoomSession: ObservableObject {
             local.onTrack = { [weak s] source, track in s?.publish(source, track) }
             let local = self.local
             levelLoop = Task { [weak self, weak s] in
+                var tick = 0
                 while !Task.isCancelled {
+                    tick += 1
+                    if tick % 14 == 1, let s { print("KURZ-AUDIO", await s.debugLine(), "micTrack=\(local.mic.track != nil)") }
                     try? await Task.sleep(nanoseconds: 150_000_000)
                     guard let s else { return }
                     let level = await s.audioLevel()

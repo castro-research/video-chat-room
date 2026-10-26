@@ -4,11 +4,7 @@ import Foundation
 /// vem do /healthz: o ligado sempre, os outros só enquanto a lista está aberta.
 @MainActor
 final class ServerList: ObservableObject {
-    #if DEBUG
-    static let factory = "http://localhost:30080"
-    #else
     static let factory = "https://cord.kurz.fyi"
-    #endif
 
     @Published private(set) var servers: [String]
     @Published private(set) var selected: String

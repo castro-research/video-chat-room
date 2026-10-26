@@ -14,4 +14,5 @@ client/apple/Sources/*/Info.plist
 **/.env
 /experimentos/manager/manager
 /experimentos/sfu/sfu
-**/dist
+**/distclient/apple/build/
+client/apple/dist/

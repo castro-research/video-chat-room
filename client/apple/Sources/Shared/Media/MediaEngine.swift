@@ -11,16 +11,7 @@ final class MediaEngine {
     var adm: RTCAudioDeviceModule { factory.audioDeviceModule }
 #endif
 
-    private init() {
-#if os(iOS)
-        // chamada de voz/vídeo: grava e toca, altifalante por defeito, segue AirPods/auscultadores
-        let session = RTCAudioSession.sharedInstance()
-        session.lockForConfiguration()
-        try? session.setCategory(.playAndRecord, mode: .videoChat, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
-        try? session.setActive(true)
-        session.unlockForConfiguration()
-#endif
-    }
+    private init() {}
 
     static let noConstraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
 }
