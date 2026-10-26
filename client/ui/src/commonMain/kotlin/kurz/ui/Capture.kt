@@ -4,7 +4,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.staticCompositionLocalOf
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kurz.core.AppState
 import kurz.media.Capture
 import kurz.media.MediaCapture
@@ -52,6 +54,18 @@ fun RoomSync(s: AppState, r: RoomClient) {
             if (s.roomId == id) s.leaveVoice()
         } finally {
             r.leave()
+        }
+    }
+}
+
+/** Sonda o /healthz a cada 5 s: o servidor ligado sempre, os outros da lista só enquanto a modal está aberta. */
+@Composable
+fun HealthSync(s: AppState, r: RoomClient) {
+    LaunchedEffect(s.managerUrl, s.serversOpen, s.servers.size) {
+        while (true) {
+            val urls = if (s.serversOpen) s.servers.toList() else listOf(s.managerUrl)
+            coroutineScope { urls.forEach { u -> launch { s.health[u] = r.ping(u) } } }
+            delay(5_000)
         }
     }
 }

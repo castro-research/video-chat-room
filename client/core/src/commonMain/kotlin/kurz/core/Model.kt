@@ -37,7 +37,7 @@ private val guestNames = listOf("Lontra", "Raposa", "Coruja", "Tucano", "Capivar
 private val lake = Photo(0xFF3F8FB5, 0xFFF0A58C, 0xFF1F4A3C, 2.4f)
 private val sunset = Photo(0xFF6C7FC9, 0xFFF08F8F, 0xFF3A3F57, 1.0f)
 
-class AppState(dark: Boolean = false) {
+class AppState(dark: Boolean = false, private val defaultServer: String = BuildInfo.defaultServer) {
     // --- pessoas ---
     // Sem login: nome aleatório, só em memória (muda a cada arranque). ponytail: perfil e persistência quando houver contas.
     val me = User("me", "${guestNames.random()} ${(10..99).random()}", Status.Online, "Online", hue = (0..359).random().toFloat())
@@ -56,7 +56,8 @@ class AppState(dark: Boolean = false) {
     val participantCount = 24
 
     // --- servidores e canais ---
-    val server = Server("vrindavan", "Vrindavan", 25f)
+    // o servidor ligado (ver "servidores" mais abaixo), com o cabeçalho da barra lateral a mostrá-lo
+    val server get() = Server(managerUrl, serverLabel(managerUrl), ((managerUrl.hashCode() and 0x7fffffff) % 360).toFloat())
 
     val categories = listOf(
         Category("Information", listOf(
@@ -95,19 +96,42 @@ class AppState(dark: Boolean = false) {
     var contentOpen by mutableStateOf(false)
     fun closeContent() { contentOpen = false }
     fun openText(id: String) { textChannelId = id; viewVoice = false; contentOpen = true }
-    fun joinVoice(id: String) { roomId = null; voiceChannelId = id; viewVoice = true; contentOpen = true }   // exemplo: sem mídia remota
+    fun joinVoice(id: String) { roomId = null; focus = null; voiceChannelId = id; viewVoice = true; contentOpen = true }   // exemplo: sem mídia remota
+    var focus by mutableStateOf<String?>(null)           // mosaico da sala de voz em destaque (chave do VoiceRoom); null = grelha
     fun openVoiceRoom() { viewVoice = true; contentOpen = true }
     fun leaveVoice() {
         val viewing = showVoice
-        voiceChannelId = null; roomId = null; viewVoice = false; muted = false; camOn = false; sharing = false
+        voiceChannelId = null; roomId = null; viewVoice = false; muted = false; camOn = false; sharing = false; focus = null
         if (viewing) contentOpen = false
     }
 
+    // --- servidores (managers) ---
+    // ponytail: só em memória; os adicionados somem ao fechar a app (persistir quando houver onde guardar)
+    val servers = mutableStateListOf(defaultServer)      // o de fábrica primeiro
+    var managerUrl by mutableStateOf(defaultServer)      // o ligado: as salas vêm dele
+    var serversOpen by mutableStateOf(false)             // modal de servidores
+    val health = mutableStateMapOf<String, Boolean>()    // servidor -> responde ao /healthz; sem entrada = ainda por saber
+    /** Muda de servidor; as salas são de cada um, por isso sai da sala em que estiver. */
+    fun selectServer(url: String) { if (url == managerUrl) return; if (inVoice) leaveVoice(); managerUrl = url }
+    /** Adiciona o servidor escrito e liga-se a ele; false se não for um endereço. */
+    fun addServer(input: String): Boolean {
+        val url = normalizeServer(input) ?: return false
+        if (url !in servers) servers.add(url)
+        selectServer(url)
+        return true
+    }
+    /** Tira um servidor adicionado (o de fábrica fica); se era o ligado, volta ao de fábrica. */
+    fun removeServer(url: String) {
+        if (url == defaultServer) return
+        servers.remove(url)
+        if (managerUrl == url) selectServer(defaultServer)
+    }
+
     // --- salas reais: o manager dá a sala, o SFU a mídia (kurz.media.RoomClient faz a ligação) ---
-    var managerUrl by mutableStateOf("http://localhost:30080")
     var roomId by mutableStateOf<String?>(null)          // sala real ligada; exclui um canal de voz de exemplo
     val inVoice get() = voiceChannelId != null || roomId != null
-    fun joinRoom(id: String) { voiceChannelId = null; roomId = id; viewVoice = true; contentOpen = true }
+    var createRoomOpen by mutableStateOf(false)          // modal de criar canal
+    fun joinRoom(id: String) { voiceChannelId = null; focus = null; roomId = id; viewVoice = true; contentOpen = true }
 
     private val voiceUsers = mapOf("general-talk" to listOf(govind, keshav), "dev-discussions" to listOf(krishna), "discussions" to listOf(vrinda))
     /** Quem está na sala de voz [id]; inclui o próprio utilizador se estiver ligado. */

@@ -16,6 +16,9 @@ enum class Capture { Off, Starting, On }
 /** Um microfone ou uma câmara. [id] é o descritor do sistema; [name] o que se mostra. */
 data class Device(val id: String, val name: String)
 
+/** Uma coisa que se pode partilhar: um ecrã inteiro ou uma janela. [id] é do sistema; [name] o que se mostra. */
+data class ScreenSource(val id: String, val name: String, val window: Boolean)
+
 /**
  * Captura local de microfone, câmara e ecrã: permissões, arranque/paragem, pré-visualização e nível do microfone.
  * Não envia nada para lado nenhum — é o ponto de ligação ao LiveKit (que fará a captura por si, ver AppState.joinVoice).
@@ -43,7 +46,17 @@ abstract class MediaCapture {
     var micDeviceId by mutableStateOf<String?>(null); protected set
     var cameraDeviceId by mutableStateOf<String?>(null); protected set
 
+    /** A plataforma deixa escolher o que partilhar (desktop). Onde o sistema pergunta sozinho (Android/iOS) a UI liga a partilha logo. */
+    open val canPickScreen get() = false
+    /** O que se pode partilhar ([refreshScreenSources] actualiza, só quando se vai escolher: no macOS listar janelas pede a permissão de gravação do ecrã). */
+    var screenSources by mutableStateOf<List<ScreenSource>>(emptyList()); protected set
+    /** Escolhido; null = o primeiro ecrã. */
+    var screenSourceId by mutableStateOf<String?>(null); protected set
+
     open fun refreshDevices() {}
+    open fun refreshScreenSources() {}
+    /** Escolhe o que partilhar; com a partilha ligada troca em quente. */
+    open fun selectScreen(id: String) {}
 
     /** Muda de dispositivo; com a fonte ligada troca em quente, sem desligar o botão. */
     open fun selectMic(id: String?) {}

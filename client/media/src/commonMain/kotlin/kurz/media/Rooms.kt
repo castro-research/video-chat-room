@@ -60,6 +60,8 @@ abstract class RoomClient {
     var notice by mutableStateOf<String?>(null)
 
     abstract suspend fun list(base: String)
+    /** O manager em [base] responde a `GET /healthz`. Nunca lança: qualquer falha é false. */
+    abstract suspend fun ping(base: String): Boolean
     abstract suspend fun create(base: String, name: String): Room?
     /** Entra na sala [id] e liga a mídia; devolve false (com [notice]) se falhar. */
     abstract suspend fun join(base: String, id: String, name: String): Boolean
@@ -75,6 +77,7 @@ abstract class RoomClient {
 class UnsupportedRooms : RoomClient() {
     private val msg = "Salas com áudio e vídeo ainda não são suportadas nesta plataforma."
     override suspend fun list(base: String) { listError = msg }
+    override suspend fun ping(base: String) = false
     override suspend fun create(base: String, name: String): Room? { notice = msg; return null }
     override suspend fun join(base: String, id: String, name: String): Boolean { notice = msg; return false }
     override suspend fun poll(base: String) {}

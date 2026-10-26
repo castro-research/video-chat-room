@@ -8,3 +8,5 @@ xcuserdata/
 DerivedData/
 *.xcuserstate
 **/.env
+/experimentos/manager/manager
+/experimentos/sfu/sfu

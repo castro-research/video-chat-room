@@ -27,6 +27,7 @@ import kotlin.system.exitProcess
 // Depois A desliga e volta a ligar a câmara (renegociação nos dois sentidos) e C entra a meio. Sai com 1 se faltar vídeo.
 fun main(args: Array<String>) { runBlocking {
     val manager = Manager(args.getOrElse(0) { "http://localhost:30080" })
+    check(manager.healthy() && !Manager("http://localhost:1").healthy()) { "healthz: verde no manager e vermelho numa porta fechada" }
     val factory = PeerConnectionFactory(HeadlessAudioDeviceModule())  // sem abrir microfone nem altifalantes
     val room = manager.create("voiceCheck")
     println("sala ${room.id} criada")

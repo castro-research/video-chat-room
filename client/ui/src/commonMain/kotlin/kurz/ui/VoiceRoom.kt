@@ -3,11 +3,15 @@ package kurz.ui
 import kurz.core.*
 import kurz.media.Capture
 import kurz.media.Device
+import kurz.media.MediaCapture
 import kurz.media.Participant
+import kurz.media.ScreenSource
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as rowItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -34,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -64,23 +69,45 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
             Text("  ·  ${people.size} ${if (people.size == 1) "pessoa ligada" else "pessoas ligadas"}", color = p.textFaint, fontSize = 12.sp)
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.border))
-        // grelha
+        // grelha; ao tocar num mosaico (pessoa ou partilha) ele fica em destaque e os outros ficam numa fila por baixo; tocar no destacado volta à grelha
+        val slots = buildList<Pair<String, @Composable (Modifier) -> Unit>> {
+            people.forEach { u -> add("u:${u.id}" to { m -> Tile(s, u, u == speaking, parts[u.id], m) }) }
+            if (s.sharing && cap.screen == Capture.On) add("screen:me" to { m -> ScreenTile("${s.me.name} · ecrã", m) { cap.ScreenPreview(it) } })
+            parts.values.filter { it.screen && it.userId != rooms.userId }.forEach { pt ->
+                add("screen:${pt.userId}" to { m -> ScreenTile("${pt.name} · ecrã", m) { rooms.RemoteVideo(pt.userId, "screen", it) } })
+            }
+        }
+        val big = slots.firstOrNull { it.first == s.focus }  // a chave pode já não existir (saiu, parou de partilhar): então é a grelha
+        val shape = RoundedCornerShape(12.dp)
         Column(Modifier.weight(1f).fillMaxWidth()) {
-            LazyVerticalGrid(
-                GridCells.Adaptive(if (compact) 220.dp else 340.dp), Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(gutter),
-                horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                items(people, key = { it.id }) { u -> Tile(s, u, u == speaking, parts[u.id]) }
-                if (s.sharing && cap.screen == Capture.On) item(key = "screen") { ScreenTile("${s.me.name} · ecrã") { cap.ScreenPreview(it) } }
-                items(parts.values.filter { it.screen && it.userId != rooms.userId }, key = { "screen:" + it.userId }) { pt ->
-                    ScreenTile("${pt.name} · ecrã") { rooms.RemoteVideo(pt.userId, "screen", it) }
+            if (big == null) {
+                LazyVerticalGrid(
+                    GridCells.Adaptive(if (compact) 220.dp else 340.dp), Modifier.weight(1f).fillMaxWidth(),
+                    contentPadding = PaddingValues(gutter),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    items(slots, key = { it.first }) { (k, tile) -> tile(Modifier.fillMaxWidth().aspectRatio(16f / 9f).rowClick(shape = shape) { s.focus = k }) }
+                }
+                if (others == 0) Text(
+                    "Ainda ninguém mais está nesta sala. Quem entrar aparece aqui.", color = p.textFaint, fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+            } else {
+                Box(Modifier.weight(1f).fillMaxWidth().padding(gutter)) {
+                    big.second(Modifier.fillMaxSize().rowClick(shape = shape) { s.focus = null })
+                    Box(Modifier.fillMaxSize().border(2.dp, p.accent, shape))  // o destacado leva o contorno de acento
+                    Row(
+                        Modifier.align(Alignment.TopStart).padding(10.dp).clip(RoundedCornerShape(6.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
+                        Arrangement.spacedBy(6.dp), Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Outlined.CloseFullscreen, null, Modifier.size(14.dp), tint = Color.White)
+                        Text("Voltar à grelha", color = Color.White, fontSize = 12.sp)
+                    }
+                }
+                LazyRow(Modifier.fillMaxWidth(), contentPadding = PaddingValues(start = gutter, end = gutter, bottom = gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    rowItems(slots.filter { it !== big }, key = { it.first }) { (k, tile) -> tile(Modifier.height(96.dp).aspectRatio(16f / 9f).rowClick(shape = shape) { s.focus = k }) }
                 }
             }
-            if (others == 0) Text(
-                "Ainda ninguém mais está nesta sala. Quem entrar aparece aqui.", color = p.textFaint, fontSize = 13.sp,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
         }
         // controlos
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.border))
@@ -92,7 +119,7 @@ fun VoiceRoom(s: AppState, modifier: Modifier = Modifier) {
             Ctl(if (s.camOn) Icons.Outlined.Videocam else Icons.Outlined.VideocamOff, "Câmara", s.camOn) { s.camOn = !s.camOn }
             DeviceMenu("câmara", cap.cameraDevices, cap.cameraDeviceId ?: cap.cameraDevices.firstOrNull()?.id, null, cap::refreshDevices) { it?.let(cap::selectCamera) }
             Spacer(Modifier.width(12.dp))
-            Ctl(Icons.AutoMirrored.Outlined.ScreenShare, "Partilhar ecrã", s.sharing, offTint = p.textMuted) { s.sharing = !s.sharing }
+            ShareControl(s, cap)
             Spacer(Modifier.width(12.dp))
             Box(
                 Modifier.height(48.dp).rowClick(shape = CircleShape) { s.leaveVoice() }.background(p.danger.copy(alpha = 0.14f)).padding(horizontal = 20.dp),
@@ -129,6 +156,40 @@ private fun DeviceMenu(what: String, devices: List<Device>, selected: String?, d
     }
 }
 
+/** Ligada, o botão pára a partilha; desligada (ou na seta) abre a lista de ecrãs e janelas, e escolher uma liga a partilha com ela. Sem lista (Android/iOS) liga logo. */
+@Composable
+private fun ShareControl(s: AppState, cap: MediaCapture) {
+    var open by remember { mutableStateOf(false) }
+    fun pick() { cap.refreshScreenSources(); open = true }
+    Box {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Ctl(Icons.AutoMirrored.Outlined.ScreenShare, "Partilhar ecrã", s.sharing, offTint = p.textMuted) {
+                if (s.sharing) s.sharing = false else if (cap.canPickScreen) pick() else s.sharing = true
+            }
+            if (cap.canPickScreen) Box(Modifier.size(24.dp).rowClick(shape = CircleShape) { pick() }, Alignment.Center) {
+                Icon(Icons.Outlined.KeyboardArrowUp, "Escolher o que partilhar", Modifier.size(16.dp), tint = p.textMuted)
+            }
+        }
+        DropdownMenu(open, { open = false }, containerColor = p.sidebar) {
+            val picked = cap.screenSourceId ?: cap.screenSources.firstOrNull()?.id
+            @Composable fun group(title: String, sources: List<ScreenSource>) {
+                if (sources.isEmpty()) return
+                Text(title, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), color = p.textFaint, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                sources.forEach { src ->
+                    DropdownMenuItem(
+                        text = { Text(src.name, Modifier.widthIn(max = 300.dp), color = p.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = { Icon(if (src.window) Icons.Outlined.WebAsset else Icons.Outlined.DesktopWindows, null, Modifier.size(16.dp), tint = if (s.sharing && src.id == picked) p.accent else p.textMuted) },
+                        onClick = { open = false; cap.selectScreen(src.id); s.sharing = true },
+                    )
+                }
+            }
+            if (cap.screenSources.isEmpty()) Text("A procurar…", Modifier.padding(horizontal = 12.dp, vertical = 8.dp), color = p.textFaint, fontSize = 13.sp)
+            group("Ecrã inteiro", cap.screenSources.filter { !it.window })
+            group("Janela", cap.screenSources.filter { it.window })
+        }
+    }
+}
+
 @Composable
 private fun Ctl(icon: ImageVector, desc: String, active: Boolean, offTint: Color = p.danger, onClick: () -> Unit) {
     Box(Modifier.size(48.dp).rowClick(selected = active, shape = CircleShape, onClick = onClick), Alignment.Center) {
@@ -136,9 +197,9 @@ private fun Ctl(icon: ImageVector, desc: String, active: Boolean, offTint: Color
     }
 }
 
-/** [part]: o participante da sala real (fontes publicadas), null nos canais de exemplo. */
+/** [part]: o participante da sala real (fontes publicadas), null nos canais de exemplo. [modifier] traz o tamanho e o toque (ver VoiceRoom). */
 @Composable
-private fun Tile(s: AppState, u: User, otherSpeaking: Boolean, part: Participant?) {
+private fun Tile(s: AppState, u: User, otherSpeaking: Boolean, part: Participant?, modifier: Modifier) {
     val me = u == s.me
     val cap = LocalMediaCapture.current
     val muted = if (me) s.muted else part?.mic == false
@@ -146,15 +207,14 @@ private fun Tile(s: AppState, u: User, otherSpeaking: Boolean, part: Participant
     // o próprio fala quando o volume real do microfone passa o limiar (~ -42 dB)
     val speaking = if (me) micOn && cap.micLevel > 0.3f else otherSpeaking
     val shape = RoundedCornerShape(12.dp)
-    Box(
-        Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(p.sidebar)
-            .border(if (speaking) 2.dp else 1.dp, if (speaking) p.accent else p.border, shape),
+    BoxWithConstraints(
+        modifier.background(p.sidebar).border(if (speaking) 2.dp else 1.dp, if (speaking) p.accent else p.border, shape),
         Alignment.Center,
     ) {
-        if (me && s.camOn && cap.camera == Capture.On) cap.CameraPreview(Modifier.fillMaxSize()) else Avatar(u, 88.dp)
+        if (me && s.camOn && cap.camera == Capture.On) cap.CameraPreview(Modifier.fillMaxSize()) else Avatar(u, (maxHeight * 0.4f).coerceAtMost(88.dp))
         if (!me && part?.camera == true) LocalRooms.current.RemoteVideo(u.id, "camera", Modifier.fillMaxSize())  // tapa o avatar quando chega o 1.º frame
         Text(
-            if (me) "${u.name} (tu)" else u.name, color = Color.White, fontSize = 12.sp,
+            if (me) "${u.name} (tu)" else u.name, color = Color.White, fontSize = 12.sp, maxLines = 1,
             modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).clip(RoundedCornerShape(6.dp))
                 .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
         )
@@ -169,12 +229,12 @@ private fun Tile(s: AppState, u: User, otherSpeaking: Boolean, part: Participant
 
 /** Uma partilha de ecrã (própria ou remota), num mosaico à parte. */
 @Composable
-private fun ScreenTile(label: String, video: @Composable (Modifier) -> Unit) {
+private fun ScreenTile(label: String, modifier: Modifier, video: @Composable (Modifier) -> Unit) {
     val shape = RoundedCornerShape(12.dp)
-    Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(shape).background(Color.Black).border(1.dp, p.border, shape), Alignment.Center) {
+    Box(modifier.background(Color.Black).border(1.dp, p.border, shape), Alignment.Center) {
         video(Modifier.fillMaxSize())
         Text(
-            label, color = Color.White, fontSize = 12.sp,
+            label, color = Color.White, fontSize = 12.sp, maxLines = 1,
             modifier = Modifier.align(Alignment.BottomStart).padding(10.dp).clip(RoundedCornerShape(6.dp))
                 .background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 3.dp),
         )

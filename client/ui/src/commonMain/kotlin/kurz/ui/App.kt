@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 fun App(state: AppState = remember { AppState() }, capture: MediaCapture = rememberMediaCapture(), rooms: RoomClient = rememberRoomClient(capture)) {
     CaptureSync(state, capture)
     RoomSync(state, rooms)
+    HealthSync(state, rooms)
     KurzTheme(state.dark) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val wc = windowClassFor(maxWidth)
@@ -47,6 +48,8 @@ fun App(state: AppState = remember { AppState() }, capture: MediaCapture = remem
                         if (state.showVoice) VoiceRoom(state, mainMod) else NoRoom(mainMod)
                     }
                 }
+                ServerDialog(state)
+                CreateRoomDialog(state)
             }
             }
         }

@@ -22,6 +22,9 @@ compose.desktop {
     application {
         mainClass = "MainKt"
         jvmArgs += "--enable-native-access=ALL-UNNAMED"  // webrtc-java carrega o libwebrtc por JNI
+        // ponytail: release sem ProGuard. O libwebrtc chama o Java por nome de classe/método (JNI) e o shrink tirava 147 das 209
+        // classes do webrtc-java; voltar a ligá-lo pede regras -keep de dev.onvoid.webrtc.** e uma prova de que a mídia funciona.
+        buildTypes.release.proguard { isEnabled.set(false) }
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Kurz Community"

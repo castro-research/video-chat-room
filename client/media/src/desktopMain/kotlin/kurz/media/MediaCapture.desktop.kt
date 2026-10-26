@@ -26,6 +26,7 @@ import dev.onvoid.webrtc.media.video.VideoFrame
 import dev.onvoid.webrtc.media.video.VideoTrack
 import dev.onvoid.webrtc.media.video.VideoTrackSink
 import dev.onvoid.webrtc.media.video.desktop.ScreenCapturer
+import dev.onvoid.webrtc.media.video.desktop.WindowCapturer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -192,17 +193,55 @@ internal class DesktopCapture : MediaCapture() {
         cameraSource = null; camera = Capture.Off; cameraFrames.clear()
     }
 
+    override val canPickScreen get() = true
+
+    override fun refreshScreenSources() {
+        scope.launch {
+            // o título vem null nos ecrãs; se a listagem falhar, fica o ecrã principal (id 0, o que o openScreen usa sem escolha) para a partilha ainda andar
+            screenSources = runCatching {
+                val screens = ScreenCapturer().run { try { desktopSources.mapIndexed { i, s -> ScreenSource("s${s.id}", s.title.orEmpty().ifBlank { "Ecrã ${i + 1}" }, false) } } finally { dispose() } }
+                val windows = WindowCapturer().run { try { desktopSources.filter { !it.title.isNullOrBlank() }.map { ScreenSource("w${it.id}", it.title, true) } } finally { dispose() } }
+                screens + windows
+            }.getOrElse { listOf(ScreenSource("s0", "Ecrã principal", false)) }
+        }
+    }
+
+    /** Abre o ecrã ou a janela escolhidos (ou o primeiro ecrã); null se não abrir. */
+    private suspend fun openScreen() = withContext(Dispatchers.IO) {
+        runCatching {
+            val pick = screenSourceId
+            val id = pick?.drop(1)?.toLong() ?: ScreenCapturer().run { try { desktopSources.firstOrNull()?.id ?: 0L } finally { dispose() } }
+            VideoDesktopSource().apply { setSourceId(id, pick?.startsWith("w") == true); setFrameRate(15); setMaxFrameSize(1920, 1080); start() }
+        }.getOrNull()
+    }
+
+    // Troca em quente, como na câmara: abre a nova fonte antes de largar a velha e republica a track "screen".
+    override fun selectScreen(id: String) {
+        if (id == screenSourceId) return
+        val previous = screenSourceId
+        screenSourceId = id
+        if (screen != Capture.On) return
+        scope.launch {
+            val src = openScreen()
+            if (src == null || screen != Capture.On) {
+                src?.stop()
+                if (src == null) { screenSourceId = previous; notice = Msg.NO_SCREEN }
+                return@launch
+            }
+            val old = screenSource
+            (tracks["screen"] as? VideoTrack)?.removeSink(screenFrames)
+            screenFrames.clear()
+            screenSource = src
+            put("screen", rtc.createVideoTrack("screen", src).also { it.addSink(screenFrames) })
+            old?.stop()
+        }
+    }
+
     override suspend fun startScreen(): Boolean {
         if (screen != Capture.Off) return screen == Capture.On
         screen = Capture.Starting
-        val src = withContext(Dispatchers.IO) {
-            runCatching {
-                // ponytail: sempre o primeiro ecrã; escolher ecrã/janela pediria um seletor
-                val id = ScreenCapturer().run { try { desktopSources.firstOrNull()?.id ?: 0L } finally { dispose() } }
-                VideoDesktopSource().apply { setSourceId(id, false); setFrameRate(15); setMaxFrameSize(1920, 1080); start() }
-            }.getOrNull()
-        }
-        if (src == null) { screen = Capture.Off; notice = Msg.NO_SCREEN; return false }
+        val src = openScreen()
+        if (src == null) { screen = Capture.Off; screenSourceId = null; notice = Msg.NO_SCREEN; return false }  // a janela pode ter fechado: volta ao ecrã
         screenSource = src
         put("screen", rtc.createVideoTrack("screen", src).also { it.addSink(screenFrames) })
         screen = Capture.On

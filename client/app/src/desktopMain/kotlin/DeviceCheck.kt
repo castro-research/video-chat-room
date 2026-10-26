@@ -18,6 +18,8 @@ fun main() {
     scene.render(0)
     var failures = 0
     fun check(ok: Boolean, what: String) { println((if (ok) "ok   " else "FALHA") + " $what"); if (!ok) failures++ }
+    val screenScene by lazy { ImageComposeScene(640, 360) { cap.ScreenPreview(Modifier.fillMaxSize()) } }
+    fun hasScreenFrame() = screenScene.render(System.nanoTime()).encodeToData(EncodedImageFormat.PNG)!!.bytes.size > 20_000
     // PNG de uma imagem em branco tem ~1 KB; com um frame de câmara passa dos 20 KB
     fun hasFrame() = scene.render(System.nanoTime()).encodeToData(EncodedImageFormat.PNG)!!.bytes.size > 20_000
 
@@ -62,8 +64,24 @@ fun main() {
             }
         } else println("AVISO só ${working.size} câmara(s) funciona(m): troca em quente não testada")
         cap.stopCamera()
+
+        // 3) o que partilhar: ecrãs e janelas listados; cada um liga direto e a troca em quente dá imagem (no macOS pede a permissão de gravação do ecrã ao terminal)
+        cap.refreshScreenSources(); delay(2_000)
+        println("partilha:   ${cap.screenSources.map { (if (it.window) "janela " else "ecrã ") + it.name }}")
+        check(cap.screenSources.any { !it.window }, "há ecrãs para partilhar")
+        val picks = cap.screenSources.filter { !it.window }.take(1) + cap.screenSources.filter { it.window }.take(2)
+        for ((i, src) in picks.withIndex()) {
+            cap.notice = null
+            cap.selectScreen(src.id)   // 1.ª: liga a partilha; as seguintes: troca em quente
+            if (i == 0) check(cap.startScreen(), "partilha liga com ${src.name} (notice=${cap.notice})")
+            delay(3_500)
+            check(cap.screen == Capture.On && cap.notice == null && cap.screenSourceId == src.id, "partilha -> ${src.name}: fica On sem aviso (estado=${cap.screen}, notice=${cap.notice})")
+            // sem imagem = falta a permissão de gravação do ecrã a quem lançou isto (no macOS o libwebrtc não dá frames nenhuns): aviso, não falha
+            if (hasScreenFrame()) println("ok    partilha -> ${src.name} dá imagem") else println("AVISO partilha -> ${src.name} sem imagem (permissão de gravação do ecrã?)")
+        }
+        cap.stopScreen()
     }
-    cap.release(); scene.close()
+    cap.release(); scene.close(); screenScene.close()
     println(if (failures == 0) "OK" else "$failures FALHA(S)")
     exitProcess(if (failures == 0) 0 else 1)
 }

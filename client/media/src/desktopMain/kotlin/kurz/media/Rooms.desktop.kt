@@ -70,9 +70,14 @@ internal class DesktopRooms(private val capture: DesktopCapture?) : RoomClient()
     private var session: MediaSession? = null
     private val remote = mutableStateMapOf<String, FrameSink>()  // track id `<userId>:<source>` -> frames
 
+    private var listedBase = ""
+
     override suspend fun list(base: String) {
+        if (base != listedBase) { listedBase = base; rooms = emptyList(); listError = null }  // outro servidor: nada das salas do anterior
         try { rooms = Manager(base).rooms(); listError = null } catch (e: CancellationException) { throw e } catch (e: Exception) { listError = describe(e) }
     }
+
+    override suspend fun ping(base: String) = Manager(base).healthy()
 
     // já entra na lista (a UI mostra a sala que se vai abrir sem esperar pela listagem seguinte)
     override suspend fun create(base: String, name: String): Room? = attempt { Manager(base).create(name) }?.also { n -> rooms = rooms.filter { it.id != n.id } + n }
@@ -133,6 +138,7 @@ private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3))
 class Manager(base: String) {
     private val base = base.trim().trimEnd('/')
 
+    suspend fun healthy(): Boolean = try { call("GET", "/healthz"); true } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
     suspend fun rooms(): List<Room> = json.decodeFromString<RoomList>(call("GET", "/v1/rooms")).rooms
     suspend fun room(id: String): Room = json.decodeFromString(call("GET", "/v1/rooms/${enc(id)}"))
     suspend fun create(name: String): Room = json.decodeFromString(call("POST", "/v1/rooms", buildJsonObject { put("name", name) }))
