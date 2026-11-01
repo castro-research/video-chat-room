@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // driver "pgx" para o goose
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 
 	"kurz/server/migrations"
 )
@@ -25,18 +26,23 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// Migrate aplica todas as migrações pendentes.
+// Migrate aplica todas as migrações pendentes. Um advisory lock de sessão do Postgres serializa
+// réplicas que sobem juntas: só uma migra, as outras esperam e encontram tudo aplicado.
 func Migrate(ctx context.Context, url string) error {
 	sqlDB, err := sql.Open("pgx", url)
 	if err != nil {
 		return fmt.Errorf("open for migrate: %w", err)
 	}
 	defer sqlDB.Close()
-	goose.SetBaseFS(migrations.FS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		return err
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("migrate locker: %w", err)
 	}
-	if err := goose.UpContext(ctx, sqlDB, "."); err != nil {
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS, goose.WithSessionLocker(locker))
+	if err != nil {
+		return fmt.Errorf("migrate provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("migrate up: %w", err)
 	}
 	return nil
