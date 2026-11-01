@@ -232,11 +232,26 @@ func TestRefreshRejectsUnknownAndExpired(t *testing.T) {
 
 func TestLogoutRevokesRefreshToken(t *testing.T) {
 	s := newTestService(t, "open")
-	sess := register(t, s, "yuri")
-	if err := s.Logout(context.Background(), RefreshRequest{RefreshToken: sess.RefreshToken}); err != nil {
+	first := register(t, s, "yuri")
+	// rotaciona para a família ter dois tokens: o primeiro usado, o segundo vivo
+	second, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: sess.RefreshToken})
+	if err := s.Logout(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken}); err != nil {
+		t.Fatal(err)
+	}
+	// conferido direto no banco antes de qualquer Refresh: reapresentar o token usado dispararia a
+	// detecção de reuso e revogaria a família por conta própria, mascarando um logout que revoga só uma linha
+	var live int
+	if err := s.store.db.QueryRow(context.Background(),
+		`SELECT count(*) FROM refresh_tokens WHERE revoked_at IS NULL`).Scan(&live); err != nil || live != 0 {
+		t.Fatalf("live refresh tokens after logout = %d (err = %v), want 0", live, err)
+	}
+	// e pela API: os dois tokens da família, o usado e o vivo, respondem 401
+	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken})
+	wantCode(t, err, 401, "unauthorized")
+	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
 	wantCode(t, err, 401, "unauthorized")
 	if err := s.Logout(context.Background(), RefreshRequest{RefreshToken: "unknown"}); err != nil {
 		t.Fatalf("logout with unknown token must not fail: %v", err)

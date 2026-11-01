@@ -44,6 +44,8 @@ func run() error {
 		Addr:              cfg.Addr,
 		Handler:           server.New(cfg, pool),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -54,6 +56,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 	}
+	stop() // devolve os sinais ao padrão: um segundo Ctrl+C mata o processo durante o drain
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {

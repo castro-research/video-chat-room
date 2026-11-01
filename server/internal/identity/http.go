@@ -8,11 +8,12 @@ import (
 )
 
 // Require exige `Authorization: Bearer <access token>` e põe o usuário no contexto.
+// O esquema não diferencia maiúsculas (RFC 7235); token vazio é rejeitado.
 func Require(tokens *TokenIssuer) func(httpx.Handler) httpx.Handler {
 	return func(next httpx.Handler) httpx.Handler {
 		return func(w http.ResponseWriter, r *http.Request) error {
-			raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if !ok || raw == "" {
+			raw, ok := bearerToken(r.Header.Get("Authorization"))
+			if !ok {
 				return httpx.ErrUnauthorized
 			}
 			id, err := tokens.Parse(raw)
@@ -26,6 +27,15 @@ func Require(tokens *TokenIssuer) func(httpx.Handler) httpx.Handler {
 			return next(w, r.WithContext(httpx.WithUserID(r.Context(), id)))
 		}
 	}
+}
+
+func bearerToken(header string) (string, bool) {
+	scheme, raw, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	raw = strings.TrimLeft(raw, " ")
+	return raw, raw != ""
 }
 
 // Mount registra as rotas de auth e de perfil.

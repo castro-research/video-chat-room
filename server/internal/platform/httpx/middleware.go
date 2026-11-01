@@ -29,6 +29,9 @@ func (s *statusWriter) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap deixa http.ResponseController (Flush, Hijack do WebSocket, deadlines) chegar ao writer original.
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // AccessLog loga método, caminho, status e duração de cada requisição.
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

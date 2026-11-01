@@ -89,3 +89,20 @@ func TestUserIDContext(t *testing.T) {
 		t.Fatalf("id = %d, ok = %v", id, ok)
 	}
 }
+
+// ResponseController (Flush, Hijack, deadlines) precisa enxergar o writer original atrás do AccessLog.
+func TestAccessLogKeepsResponseControllerWorking(t *testing.T) {
+	var flushErr error
+	h := AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hi"))
+		flushErr = http.NewResponseController(w).Flush()
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if flushErr != nil {
+		t.Fatalf("flush through AccessLog: %v", flushErr)
+	}
+	if !rec.Flushed {
+		t.Fatal("recorder was not flushed")
+	}
+}
