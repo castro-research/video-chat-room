@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: kurz
+      POSTGRES_PASSWORD: kurz
+      POSTGRES_DB: kurz
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kurz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - kurzdb:/var/lib/postgresql/data
+volumes:
+  kurzdb:
