@@ -97,7 +97,9 @@ func TestAuthFlowEndToEnd(t *testing.T) {
 		t.Fatalf("bad login = %d %v", status, body)
 	}
 
-	// refresh: o token antigo para de funcionar e o reuso derruba a família
+	// refresh: o token antigo para de funcionar. Reapresentado logo em seguida (dentro da janela de graça)
+	// é tratado como corrida/retry: 401, mas a família continua viva. O reuso depois da janela, que
+	// derruba a família, é coberto em identity (lá o relógio é controlável).
 	old := sess["refreshToken"].(string)
 	status, next := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": old})
 	if status != 200 {
@@ -106,8 +108,8 @@ func TestAuthFlowEndToEnd(t *testing.T) {
 	if status, _ := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": old}); status != 401 {
 		t.Fatalf("reused refresh = %d", status)
 	}
-	if status, _ := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": next["refreshToken"].(string)}); status != 401 {
-		t.Fatalf("family should be revoked, got %d", status)
+	if status, body := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": next["refreshToken"].(string)}); status != 200 {
+		t.Fatalf("family must survive a reuse inside the grace window, got %d %v", status, body)
 	}
 
 	// logout sempre 204

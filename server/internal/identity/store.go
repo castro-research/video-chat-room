@@ -17,6 +17,10 @@ var (
 	errRefreshReused  = errors.New("identity: refresh token reused")
 )
 
+// refreshReuseGrace é a janela em que reapresentar um refresh token recém-usado é tratado como corrida
+// ou retry do próprio cliente (401 sem revogar), e não como roubo.
+const refreshReuseGrace = 10 * time.Second
+
 type User struct {
 	ID       int64
 	Username string
@@ -88,8 +92,10 @@ func (s *store) insertRefresh(ctx context.Context, r newRefresh) error {
 }
 
 // rotateRefresh gasta o token antigo e grava o novo, na mesma família, numa transação.
-// Token já usado = reuso: revoga a família inteira (o commit acontece mesmo assim) e devolve errRefreshReused.
-func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefresh, now time.Time) (int64, error) {
+// Token já usado há até `grace`: errInvalidRefresh sem revogar nada (refreshes concorrentes ou retry).
+// Token já usado há mais que isso = reuso, mesmo se expirado: revoga a família inteira (o commit acontece
+// mesmo assim) e devolve errRefreshReused. A expiração só é checada depois do reuso.
+func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefresh, now time.Time, grace time.Duration) (int64, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return 0, err
@@ -108,10 +114,14 @@ func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefre
 	if err != nil {
 		return 0, err
 	}
-	if revokedAt != nil || !now.Before(expiresAt) {
+	if revokedAt != nil {
 		return 0, errInvalidRefresh
 	}
 	if usedAt != nil {
+		if now.Sub(*usedAt) <= grace {
+			// corrida entre refreshes concorrentes ou retry: só o vencedor leva, a família continua viva
+			return 0, errInvalidRefresh
+		}
 		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL`, familyID, now); err != nil {
 			return 0, err
 		}
@@ -119,6 +129,9 @@ func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefre
 			return 0, err
 		}
 		return 0, errRefreshReused
+	}
+	if !now.Before(expiresAt) {
+		return 0, errInvalidRefresh
 	}
 	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET used_at = $2 WHERE id = $1`, id, now); err != nil {
 		return 0, err

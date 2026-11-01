@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,19 +120,103 @@ func TestRefreshRotatesToken(t *testing.T) {
 	}
 }
 
+// fixedClock prende o relógio do Service em base+offset, para controlar a janela de graça e o TTL.
+func fixedClock(s *Service) (advance func(time.Duration)) {
+	base := time.Now()
+	var offset time.Duration
+	s.now = func() time.Time { return base.Add(offset) }
+	return func(d time.Duration) { offset += d }
+}
+
 func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	s := newTestService(t, "open")
+	advance := fixedClock(s)
 	first := register(t, s, "yuri")
 	second, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// reapresentar o token antigo é sinal de roubo
+	// reapresentar o token antigo depois da janela de graça é sinal de roubo
+	advance(refreshReuseGrace + time.Second) // ainda dentro do RefreshTTL de 1h
 	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
 	wantCode(t, err, 401, "unauthorized")
 	// e o token novo, da mesma família, também morre
 	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken})
 	wantCode(t, err, 401, "unauthorized")
+}
+
+func TestRefreshReuseInsideGraceWindowKeepsTheFamily(t *testing.T) {
+	s := newTestService(t, "open")
+	advance := fixedClock(s)
+	first := register(t, s, "yuri")
+	second, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// retry/corrida logo depois da rotação: 401, mas sem derrubar a sessão
+	advance(refreshReuseGrace / 2)
+	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	wantCode(t, err, 401, "unauthorized")
+	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken}); err != nil {
+		t.Fatalf("sibling token must survive a reuse inside the grace window: %v", err)
+	}
+}
+
+func TestRefreshReuseOfExpiredTokenRevokesTheFamily(t *testing.T) {
+	s := newTestService(t, "open")
+	advance := fixedClock(s)
+	first := register(t, s, "yuri") // expira em t0+1h
+	advance(50 * time.Minute)
+	second, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken}) // expira em t0+1h50
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance(11 * time.Minute) // t0+1h01: o primeiro já expirou e foi usado há 11 min
+	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	wantCode(t, err, 401, "unauthorized")
+	// o irmão ainda estaria no prazo, então só morre se a família foi revogada
+	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken})
+	wantCode(t, err, 401, "unauthorized")
+}
+
+func TestConcurrentRefreshDoesNotLogOut(t *testing.T) {
+	s := newTestService(t, "open")
+	sess := register(t, s, "yuri")
+	const n = 8
+	var (
+		wg    sync.WaitGroup
+		start = make(chan struct{})
+		sesss = make([]Session, n)
+		errs  = make([]error, n)
+	)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			sesss[i], errs[i] = s.Refresh(context.Background(), RefreshRequest{RefreshToken: sess.RefreshToken})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var winner *Session
+	for i, err := range errs {
+		if err == nil {
+			if winner != nil {
+				t.Fatal("more than one concurrent refresh succeeded")
+			}
+			winner = &sesss[i]
+			continue
+		}
+		wantCode(t, err, 401, "unauthorized")
+	}
+	if winner == nil {
+		t.Fatal("no concurrent refresh succeeded")
+	}
+	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: winner.RefreshToken}); err != nil {
+		t.Fatalf("winner's refresh token must still work (family revoked?): %v", err)
+	}
 }
 
 func TestRefreshRejectsUnknownAndExpired(t *testing.T) {

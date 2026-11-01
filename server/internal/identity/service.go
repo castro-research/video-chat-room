@@ -138,7 +138,7 @@ func (s *Service) Refresh(ctx context.Context, req RefreshRequest) (Session, err
 	raw, hash := newRefreshToken()
 	now := s.now()
 	userID, err := s.store.rotateRefresh(ctx, hashRefreshToken(req.RefreshToken),
-		newRefresh{ID: s.ids.Next(), Hash: hash, ExpiresAt: now.Add(s.cfg.RefreshTTL)}, now)
+		newRefresh{ID: s.ids.Next(), Hash: hash, ExpiresAt: now.Add(s.cfg.RefreshTTL)}, now, refreshReuseGrace)
 	if errors.Is(err, errInvalidRefresh) || errors.Is(err, errRefreshReused) {
 		return Session{}, httpx.ErrUnauthorized
 	}
@@ -146,6 +146,9 @@ func (s *Service) Refresh(ctx context.Context, req RefreshRequest) (Session, err
 		return Session{}, err
 	}
 	user, err := s.store.userByID(ctx, userID)
+	if errors.Is(err, errNotFound) {
+		return Session{}, httpx.ErrUnauthorized // conta apagada entre a rotação e a leitura
+	}
 	if err != nil {
 		return Session{}, err
 	}
