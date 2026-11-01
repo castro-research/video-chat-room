@@ -272,3 +272,19 @@ func TestMeAndUpdateMe(t *testing.T) {
 	_, err = s.UpdateMe(context.Background(), uid, UpdateMeRequest{Hue: &badHue})
 	wantCode(t, err, 422, "validation")
 }
+
+func TestCreateUserOnlyMapsUsernameConflictToTaken(t *testing.T) {
+	s := newTestService(t, "open")
+	ctx := context.Background()
+	if _, err := s.store.createUser(ctx, 42, "yuri", "Yuri", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.createUser(ctx, 43, "yuri", "Yuri", "hash"); !errors.Is(err, errUsernameTaken) {
+		t.Fatalf("same username: err = %v, want errUsernameTaken", err)
+	}
+	// conflito na chave primária não é "username taken"
+	_, err := s.store.createUser(ctx, 42, "outro", "Outro", "hash")
+	if err == nil || errors.Is(err, errUsernameTaken) {
+		t.Fatalf("same id, different username: err = %v, want a non-username_taken error", err)
+	}
+}

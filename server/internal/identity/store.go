@@ -58,7 +58,7 @@ func (s *store) createUser(ctx context.Context, id int64, username, name, passwo
 		`INSERT INTO users (id, username, name, password_hash) VALUES ($1, $2, $3, $4)`,
 		id, username, name, passwordHash)
 	var pg *pgconn.PgError
-	if errors.As(err, &pg) && pg.Code == "23505" {
+	if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "users_username_key" {
 		return User{}, errUsernameTaken
 	}
 	if err != nil {
