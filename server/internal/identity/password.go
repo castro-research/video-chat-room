@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -21,13 +22,24 @@ const (
 
 var b64 = base64.RawStdEncoding
 
+// argonSem limita quantos Argon2 rodam ao mesmo tempo: cada um aloca ~19 MiB, então uma rajada de
+// logins sem limite vira pico de memória. Com GOMAXPROCS vagas a CPU continua toda em uso; o resto espera.
+var argonSem = make(chan struct{}, runtime.GOMAXPROCS(0))
+
+// argonKey é argon2.IDKey sob o semáforo.
+func argonKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	argonSem <- struct{}{}
+	defer func() { <-argonSem }()
+	return argon2.IDKey(password, salt, time, memory, threads, keyLen)
+}
+
 // HashPassword devolve o hash no formato PHC: $argon2id$v=19$m=..,t=..,p=..$salt$hash.
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := argonKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, argonMemory, argonTime, argonThreads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
 }
@@ -55,6 +67,6 @@ func VerifyPassword(password, encoded string) bool {
 	if err != nil || len(want) == 0 {
 		return false
 	}
-	got := argon2.IDKey([]byte(password), salt, time, memory, threads, uint32(len(want)))
+	got := argonKey([]byte(password), salt, time, memory, threads, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
