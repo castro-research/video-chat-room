@@ -270,7 +270,6 @@ func TestVoiceStateEventsAreFilteredByViewChannel(t *testing.T) {
 	}
 }
 
-
 func TestVoiceStateRemovedOnKickBanAndLeave(t *testing.T) {
 	env := newVoiceServer(t, true)
 	srv := env.srv.URL

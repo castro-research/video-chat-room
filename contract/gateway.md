@@ -1,4 +1,4 @@
-# Kurz gateway (contract 0.5)
+# Kurz gateway (contract 0.6)
 
 Realtime channel: `GET {base}/v1/gateway`, upgraded to a WebSocket (`ws`/`wss` from the base scheme). The server advertises it
 as the `realtime` capability in `/.well-known/kurz`. Every frame is a JSON text message:
@@ -15,7 +15,9 @@ The access token never goes in the URL: the first client frame authenticates.
 1. Server sends `hello`: `{ "op": "hello", "d": { "heartbeatInterval": 30000 } }` (milliseconds).
 2. The client has 10 s to send **`identify`** or **`resume`**, else the server closes with `4003`.
 3. `identify`: `{ "op": "identify", "d": { "token": "<access token>" } }`. Reply:
-   `{ "op": "ready", "d": { "sessionId", "user": { "id" }, "guilds": [ { "id", "name", "ownerId" } ], "heartbeatInterval" } }`.
+   `{ "op": "ready", "d": { "sessionId", "user": { "id" }, "guilds": [ { "id", "name", "ownerId" } ], "heartbeatInterval", "voice"? } }`.
+   `voice` (only on servers with the `voice` capability) is the current voice state: an array of `voice.state` payloads
+   (`{ channelId, connected: true, participant }`), one per person in a voice channel of the user's guilds that the user can see.
    A bad or expired token closes with `4001`: refresh the access token and reconnect once.
 4. After `ready` the server sends events. Anything committed before `ready` is read over REST *after* `ready`
    (list channels, members, messages); anything committed later arrives as a dispatch. An event may therefore arrive that
@@ -25,6 +27,8 @@ The access token never goes in the URL: the first client frame authenticates.
 
 The client sends `{ "op": "heartbeat" }` every `heartbeatInterval` ms; the server answers `{ "op": "heartbeat_ack" }`.
 No frame from the client for two intervals closes the connection with `4010`. The session survives for resume.
+On a server with `voice`, each heartbeat also renews the sender's voice state: a user in a voice channel whose client sends no
+heartbeat for 3 minutes is removed from it (and everyone who sees the channel gets `voice.state` with `connected: false`).
 
 ## Sequence numbers and resume
 
@@ -49,7 +53,7 @@ ignore a `seq` it has already processed.
 
 Events are filtered by the server, per user, at delivery time:
 
-- Channel events (`message.*`, `reaction.*`, `channel.create`, `channel.update`, `channel.permissions`) only reach members
+- Channel events (`message.*`, `reaction.*`, `voice.state`, `channel.create`, `channel.update`, `channel.permissions`) only reach members
   who have `viewChannel` on that channel.
 - Guild events (`guild.update`, `guild.delete`, `member.*`, `role.*`, `channel.delete`) reach every member of the guild.
 - `guild.create` reaches only the user who created the guild.
@@ -75,8 +79,16 @@ Events are filtered by the server, per user, at delivery time:
 | `channel.create` / `channel.update` | `Channel`. Sibling positions may have moved: refetch the list when order matters |
 | `channel.delete` | `{ id, guildId }` |
 | `channel.permissions` | `{ channelId, guildId, override }` (an override was set, changed or removed) |
+| `voice.state` | `{ channelId, connected, participant: VoiceParticipant }`. `connected: true`: joined the channel or changed mute/camera/share (upsert by `participant.user.id`); `false`: left. Moving between channels is a `false` for the old one then a `true` for the new one (each only reaches who sees that channel). Removal from the guild (leave, kick, ban) also produces `connected: false` |
 
-`voice.state`, presence and typing are not implemented yet.
+Presence, typing and `voice.speaking` are not implemented yet.
+
+## Client ops after `ready`
+
+- `heartbeat` (above).
+- `voice.state.set` `{ "muted": bool, "camOn": bool, "sharing": bool }`: the caller's own state while in a voice channel (servers with `voice` only;
+  elsewhere it is an invalid frame, `4002`). No ack: the result is the `voice.state` event, which the sender receives too.
+  Without `speak` in the channel, `muted` is forced to `true`. It is ignored if the caller is not in a voice channel.
 
 ## Slow clients
 

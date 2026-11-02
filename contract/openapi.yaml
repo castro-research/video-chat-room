@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Kurz server contract
-  version: 0.5.0
+  version: 0.6.0
   description: |
     The contract every Kurz server implements, whatever language it is written in. One server is a platform: accounts are global, and users create and join many guilds (communities).
     The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
@@ -22,6 +22,7 @@ info:
     - 0.3 adds message editing/deleting/replies, reactions and read states over REST. Messages exist only in `text` channels (422 `validation` elsewhere).
     - 0.4 specifies the gateway: sequence numbers, resume, permission-filtered events. Frames and events are in `gateway.md`; the `Gateway*` schemas below are the pre-0.4 shapes and are superseded by it where they differ. New capability `realtime`.
     - 0.5 adds attachments (direct upload to object storage with pre-signed URLs) and full-text search. `Message.attachments` carries pre-signed GET URLs that expire. New capabilities `search` and `attachments`.
+    - 0.6 implements voice: join/leave/list over REST, the media token, and the `voice.state` event (see `gateway.md`). New capability `voice`, advertised only when the server has an SFU configured.
     - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
     - 429 carries `Retry-After` (seconds).
     - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
@@ -894,7 +895,12 @@ paths:
     post:
       operationId: joinVoice
       tags: [voice]
-      summary: Get what is needed to connect to a voice channel's media. Leaves any other voice channel first.
+      summary: Get what is needed to connect to a voice channel's media (capability `voice`). Leaves any other voice channel first.
+      description: |
+        Needs `viewChannel` (else 404) and `connect` (else 403 `missing_permission`); a text channel answers 422 `validation`.
+        Without `speak` the caller joins muted and stays muted (`voice.state.set` cannot unmute). `media.token` is a JWT
+        valid 60 s and accepted once by the SFU: ask for a new one (this same call) to reconnect. Calling it again for the channel
+        you are already in changes no state and emits no event. Moving to another channel emits a `voice.state` leave for the old one.
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       responses:
@@ -907,18 +913,43 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Validation' }
+        '501': { description: 'not_supported: the server has no SFU configured (no `voice` capability).' }
+
+  /v1/channels/{channelId}/voice:
+    get:
+      operationId: listVoiceParticipants
+      tags: [voice]
+      summary: Who is in a voice channel right now (capability `voice`). Needs `viewChannel`.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [participants]
+                properties:
+                  participants:
+                    type: array
+                    items: { $ref: '#/components/schemas/VoiceParticipant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
         '501': { description: not_supported }
 
   /v1/channels/{channelId}/voice/leave:
     post:
       operationId: leaveVoice
       tags: [voice]
-      summary: Leave the voice channel. Closing the media socket has the same effect.
+      summary: Leave the voice channel (capability `voice`). Idempotent. The server does not notice a closed media socket by itself; call this, or stop sending gateway heartbeats (the voice state expires after 3 minutes without one).
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       responses:
-        '204': { description: Left }
+        '204': { description: Left (or was not in that channel) }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { description: not_supported }
 
   /v1/gateway:
     get:
@@ -945,7 +976,10 @@ paths:
       description: |
         Frames are JSON `{ "op": string, "d": object }`. Client to server: `MediaClientMessage`. Server to client: `MediaServerMessage`.
         The first client frame must be `join` within 10 s, else the server closes with 4001.
-        Closing the socket leaves the voice channel.
+        Closing the socket ends the media session; the voice state (who is listed in the channel) is cleared by `voice/leave`
+        or by the lack of gateway heartbeats.
+        The `join` token is the `VoiceSession.media.token`: a JWT HS256 (`iss` `kurz-manager`, `sub` user id, `name`, `room` channel id,
+        `jti`, `exp` = 60 s, `speak`); a replayed or expired token closes with 4001.
       responses:
         '101': { description: Switching Protocols }
 
@@ -1055,7 +1089,7 @@ components:
           type: string
           pattern: '^[0-9]+\.[0-9]+$'
           description: major.minor of this contract. A client refuses a server whose major differs.
-          example: '0.5'
+          example: '0.6'
         name: { type: string }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
         iconUrl: { type: string, format: uri }

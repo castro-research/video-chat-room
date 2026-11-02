@@ -1,4 +1,4 @@
-# Kurz server contract (v0.5, draft)
+# Kurz server contract (v0.6, draft)
 
 What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
 global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
@@ -22,7 +22,9 @@ Per-endpoint rules and error codes are in the OpenAPI file. This file has what a
 
 ## Voice
 
-1. `POST /v1/channels/{id}/voice/join` returns `media.url`, `media.token`, `iceServers` and who is already there.
+0. Only if `capabilities` has `voice`; otherwise the voice endpoints answer 501 `not_supported`.
+1. `POST /v1/channels/{id}/voice/join` returns `media.url`, `media.token` (JWT valid 60 s, single use), `iceServers` and who is already there.
+   It needs `connect` on the channel (without `speak` you join muted). To reconnect the media socket, call it again for a fresh token.
 2. Open `media.url` (WebSocket), send `join` with `media.token`, wait for `joined`.
 3. One `RTCPeerConnection` with those `iceServers`. For each local track: send `publish { trackId, source }`, then `offer`.
    The server answers; ICE candidates trickle both ways as `candidate`.
@@ -30,8 +32,10 @@ Per-endpoint rules and error codes are in the OpenAPI file. This file has what a
    offer at once) the client is the polite peer: it rolls back and answers the server's offer.
 5. Every forwarded track has msid stream id = the publisher's user id and track id = `<userId>:<source>`
    (`mic`, `camera`, `screen`, `screenAudio`). That is how a client attaches a remote track to a tile.
-6. Mute, camera and share: stop or start the track and send `voice.state.set` on the gateway. Everyone receives `voice.state`.
-7. Leave with `POST .../voice/leave` or by closing the media socket.
+6. Mute, camera and share: stop or start the track and send `voice.state.set` on the gateway. Everyone who sees the channel receives `voice.state`.
+   `GET /v1/channels/{id}/voice` lists who is in a channel; `ready.d.voice` carries the whole current state at connect time.
+7. Leave with `POST .../voice/leave` (and close the media socket). Keep sending gateway heartbeats while in voice: 3 minutes without one drops you from the state.
+   Leaving the guild, being kicked or banned also removes you from the state. Joining another channel moves you.
 
 Servers MUST support Opus for audio and VP8 for video (H.264 optional).
 
@@ -53,11 +57,11 @@ Servers MUST support Opus for audio and VP8 for video (H.264 optional).
   object storage answers 501 `not_supported`.
 - Search (capability `search`): `GET /v1/guilds/{id}/search?q=...`, newest first, cursor-paginated, limited to channels the caller can see.
 
-## Left out of 0.5 on purpose
+## Left out of 0.6 on purpose
 
 - Threads, typing indicators, search ranking by relevance and image dimensions on attachments.
 - Federation between servers, and any login other than username and password.
-- Simulcast/layer selection: one video layer per publisher. Voice events, presence and typing on the gateway.
+- Simulcast/layer selection: one video layer per publisher. Presence, typing and `voice.speaking` on the gateway. The SFU does not enforce `speak` or kick a revoked user from an open media session; the server only stops issuing tokens and clears the state.
 
 ## Tooling
 
