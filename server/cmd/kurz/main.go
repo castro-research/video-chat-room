@@ -53,6 +53,11 @@ func run() error {
 	} else {
 		slog.Info("attachments disabled (KURZ_S3_ENDPOINT not set)")
 	}
+	if cfg.Voice.Enabled() {
+		slog.Info("voice enabled", "sfu", cfg.Voice.SFUURL)
+	} else {
+		slog.Info("voice disabled (KURZ_SECRET and KURZ_SFU_URL not set)")
+	}
 	app := server.NewApp(cfg, pool, opts...)
 	workersCtx, stopWorkers := context.WithCancel(context.Background())
 	workersDone := make(chan struct{})

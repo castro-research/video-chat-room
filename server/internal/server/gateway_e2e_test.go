@@ -41,6 +41,7 @@ type wsClient struct {
 	t      *testing.T
 	ws     *websocket.Conn
 	frames chan wsFrame
+	ready  wsFrame // o frame ready desta conexão
 	errc   chan error
 }
 
@@ -71,7 +72,7 @@ func connect(t *testing.T, srv *httptest.Server, u *user) *wsClient {
 	if err := ws.Write(ctx, websocket.MessageText, b); err != nil {
 		t.Fatal(err)
 	}
-	c.expect("ready")
+	c.ready = c.expect("ready")
 	return c
 }
 

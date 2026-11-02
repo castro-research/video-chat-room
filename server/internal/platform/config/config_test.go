@@ -75,3 +75,38 @@ func TestLoadS3(t *testing.T) {
 		t.Fatalf("s3 on: %+v %v", c.S3, err)
 	}
 }
+
+func TestLoadVoice(t *testing.T) {
+	c, err := Load(env(valid()))
+	if err != nil || c.Voice.Enabled() {
+		t.Fatalf("voice off by default: %+v %v", c.Voice, err)
+	}
+	m := valid()
+	m["KURZ_SECRET"], m["KURZ_SFU_URL"] = strings.Repeat("v", 16), "ws://sfu:8081/v1/media"
+	m["KURZ_ICE_SERVERS"] = `[{"urls":["turn:t:3478"],"username":"u","credential":"c"}]`
+	c, err = Load(env(m))
+	if err != nil || !c.Voice.Enabled() || len(c.Voice.ICEServers) != 1 || c.Voice.ICEServers[0].Username != "u" {
+		t.Fatalf("voice on: %+v %v", c.Voice, err)
+	}
+}
+
+func TestLoadVoiceErrors(t *testing.T) {
+	cases := map[string]func(map[string]string){
+		"secret without url": func(m map[string]string) { delete(m, "KURZ_SFU_URL") },
+		"url without secret": func(m map[string]string) { delete(m, "KURZ_SECRET") },
+		"short secret":       func(m map[string]string) { m["KURZ_SECRET"] = "curto" },
+		"http url":           func(m map[string]string) { m["KURZ_SFU_URL"] = "http://sfu/v1/media" },
+		"bad ice json":       func(m map[string]string) { m["KURZ_ICE_SERVERS"] = "{" },
+		"ice without urls":   func(m map[string]string) { m["KURZ_ICE_SERVERS"] = `[{}]` },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := valid()
+			m["KURZ_SECRET"], m["KURZ_SFU_URL"] = strings.Repeat("v", 16), "wss://sfu/v1/media"
+			mutate(m)
+			if _, err := Load(env(m)); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
