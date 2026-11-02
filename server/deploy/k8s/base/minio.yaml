@@ -1,0 +1,60 @@
+# MinIO para ESTUDO (anexos). O bucket é criado pelo próprio servidor na subida.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kurz-minio
+  namespace: kurz
+type: Opaque
+stringData:
+  # SEGREDOS DE DESENVOLVIMENTO. Não são reais.
+  MINIO_ROOT_USER: kurzdev
+  MINIO_ROOT_PASSWORD: kurzdev-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: kurz
+spec:
+  selector: { app: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: s3 }
+    - { name: console, port: 9001, targetPort: console }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: kurz
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: minio }
+  template:
+    metadata:
+      labels: { app: minio }
+    spec:
+      containers:
+        - name: minio
+          image: cgr.dev/chainguard/minio:latest
+          args: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+          ports:
+            - { name: s3, containerPort: 9000 }
+            - { name: console, containerPort: 9001 }
+          envFrom:
+            - secretRef: { name: kurz-minio }
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: s3 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /minio/health/live, port: s3 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          emptyDir: {} # estudo: os anexos somem com o pod

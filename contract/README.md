@@ -20,6 +20,12 @@ Per-endpoint rules and error codes are in the OpenAPI file. This file has what a
 5. Send messages with `POST /v1/channels/{id}/messages`, with a `nonce`. The `message.create` that comes back carries the
    same `nonce`, which is how the sender swaps its optimistic copy for the real one.
 
+## Rate limiting
+
+Servers rate limit with token buckets: `POST /v1/auth/*` per client IP, every other write (`POST`/`PUT`/`PATCH`/`DELETE`) per user. Reads are not limited.
+Over the limit the server answers `429` with `{ "code": "rate_limited" }` and `Retry-After` (seconds, at least 1). Clients wait that long before
+retrying (never faster than once per second) and do not retry in a tight loop. Limits are per server replica, so the exact threshold varies; do not hard-code it.
+
 ## Voice
 
 0. Only if `capabilities` has `voice`; otherwise the voice endpoints answer 501 `not_supported`.

@@ -12,6 +12,8 @@ make run     # servidor em :8080 (aplica as migrações sozinho; usa o MinIO loc
 make test    # testes, incluindo Postgres real e, se o MinIO estiver de pé, S3 real (senão fake, com SKIP explícito)
 make test-short     # sem os testes de volume
 make bench-search   # mede a busca com 1M de mensagens (KURZ_BENCH_MESSAGES muda o volume)
+make loadtest       # bots de carga contra um servidor de pé (veja "Teste de carga")
+make kind-up        # cluster kind local com Postgres, MinIO e 2 réplicas (veja "Kubernetes")
 ```
 
 ## Configuração
@@ -32,6 +34,12 @@ make bench-search   # mede a busca com 1M de mensagens (KURZ_BENCH_MESSAGES muda
 | `KURZ_SECRET` | vazio | segredo HS256 do token de mídia, **o mesmo do SFU** (16 bytes ou mais). Vem junto com `KURZ_SFU_URL`; vazios desligam a voz (501 `not_supported`, sem a capability `voice`) |
 | `KURZ_SFU_URL` | vazio | `ws://` ou `wss://` do `/v1/media` do SFU, como o CLIENTE alcança (vai em `VoiceSession.media.url`) |
 | `KURZ_ICE_SERVERS` | STUN do Google | JSON `[{"urls":[...],"username":"","credential":""}]` entregue em `VoiceSession.iceServers` |
+| `KURZ_NODE_ID_FROM_HOSTNAME` | `false` | `true`: o node id é o sufixo numérico do `HOSTNAME` (`kurz-1` → 1), para StatefulSet; tem prioridade sobre `KURZ_NODE_ID` |
+| `KURZ_RATELIMIT` | `on` | `off` desliga o rate limit (use no loadtest) |
+| `KURZ_RATELIMIT_AUTH_BURST` / `KURZ_RATELIMIT_AUTH_PER_MIN` | `20` / `20` | token bucket **por IP** em `POST /v1/auth/*`: rajada e reposição por minuto |
+| `KURZ_RATELIMIT_WRITE_BURST` / `KURZ_RATELIMIT_WRITE_PER_SEC` | `60` / `20` | token bucket **por usuário** nas demais escritas (POST/PUT/PATCH/DELETE; sem token válido, por IP) |
+| `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
+| `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 
 A imagem oficial `minio/minio` saiu do Docker Hub; o compose usa `cgr.dev/chainguard/minio`.
 
@@ -54,3 +62,55 @@ um usuário por canal, entrar em outro move) e emite o JWT de 60 s de uso único
 O SFU consome o `jti` (guarda até o `exp`): um token reaproveitado fecha com 4001. O estado vive do heartbeat do gateway (3 min sem heartbeat e o job `voice.sweep` remove);
 sair/kick/ban da guild remove na hora (o módulo ouve `member.leave` no bus) e o `voice.state` sai pelo outbox. O SFU não tem API para derrubar uma sessão de mídia aberta,
 nem aplica `speak`: o servidor só para de emitir tokens, limpa o estado e força `muted` sem `speak`.
+
+## Rate limit
+
+Token bucket em memória (`internal/platform/ratelimit`): `POST /v1/auth/*` por IP e as demais escritas por usuário. Estourou: `429`
+`{"code":"rate_limited"}` com `Retry-After` em segundos (contrato). Leituras, `/healthz` e `/metrics` não são limitados. Buckets cheios
+(ociosos) são varridos a cada minuto. **Dívida:** o limite é por réplica, não global; com N réplicas um cliente pode chegar a N vezes o
+configurado (global exigiria Redis ou afinidade no balanceador). Atrás de proxy/Ingress, ligue `KURZ_TRUSTED_PROXY=true`, senão todos
+os clientes parecem ter o IP do proxy.
+
+## Observabilidade
+
+- Logs: JSON (`slog`). Cada requisição loga `request_id` (aceita o `X-Request-Id` do cliente, senão gera um; é devolvido no header) e `trace_id` quando há trace.
+- Métricas: `GET /metrics` (Prometheus). **Interno**: sem auth e fora do rate limit, não o exponha na Internet (no cluster, só o IP do pod; o Service
+  público/Ingress não deve rotear esse caminho). Séries principais: `kurz_http_request_duration_seconds{method,route}` e `kurz_http_requests_total{method,route,status}`
+  (a rota é o padrão do ServeMux, ex. `POST /v1/channels/{channelId}/messages`, sem ids; `unmatched` e `rate_limited` para o que não chegou ao mux), `kurz_ws_connections`,
+  `kurz_ws_sessions`, `kurz_gateway_events_delivered_total`, `kurz_gateway_events_dropped_total` (backpressure), `kurz_gateway_slow_disconnects_total`,
+  `kurz_outbox_lag_seconds` (idade do evento pendente mais antigo), `kurz_outbox_pending`, `kurz_jobs_pending`, `kurz_jobs_failed`, `kurz_pgx_pool_*` e as de runtime do Go.
+  O lag do outbox e os jobs vêm de 2 queries curtas por raspagem.
+- Traces: com `KURZ_OTEL_ENDPOINT`, um span por requisição HTTP (otelhttp; `/metrics` e `/healthz` ficam de fora) e um por query (otelpgx), exportados por OTLP/HTTP.
+  Desligado por padrão, sem custo.
+
+## Teste de carga
+
+`loadtest/` são bots em Go (RNF16). Rode o servidor com `KURZ_RATELIMIT=off` (o gerador vem de um IP só) e:
+
+```bash
+go run ./loadtest --url http://localhost:8080 --users 20 --rate 20 --duration 30s   # ou: make loadtest
+```
+
+Registra N usuários, cria uma guild, entra por convite, conecta N sockets, envia `--rate` mensagens/s (e `--read-rate` leituras/s, padrão igual) e mede
+latência REST de escrita e leitura e a ponta a ponta (do `POST` até o `message.create` chegar ao socket de **outro** bot). Imprime p50/p95/p99 e PASS/FAIL de
+RNF1 (e2e p95 < 150 ms, p99 < 400 ms) e RNF2 (leitura p95 < 50 ms, escrita p95 < 100 ms), mais perda de eventos e erros; sai com código 1 se algo violar.
+Os sockets reconectam sozinhos (backoff exponencial com jitter total; `resume` quando a sessão ainda existe). `--chaos` tolera perda/erros e exige que todos os sockets voltem (RNF8).
+Os resultados dependem da máquina: rode ao menos duas vezes e olhe a variação.
+
+## Kubernetes (kind)
+
+```bash
+make kind-up            # cria o cluster kind "kurz", builda e carrega a imagem, aplica os manifests e espera o rollout
+curl localhost:28080/healthz        # API (NodePort 30080); MinIO em localhost:29000
+make kind-loadtest      # desliga o rate limit (overlay kind-loadtest) e roda o loadtest contra as 2 réplicas
+make kind-kill          # mata kurz-1 sem aviso: os clientes reconectam, o servidor segue
+make kind-down
+```
+
+- `Dockerfile`: multi-stage, build estático (`CGO_ENABLED=0`), imagem `distroless/static:nonroot`; inclui o binário `/kurz-loadtest`.
+- `deploy/k8s/base` (kustomize): namespace `kurz`, Postgres (StatefulSet + PVC, **só para estudo**), MinIO (Deployment, `emptyDir`, bucket criado pelo servidor),
+  o monólito como **StatefulSet** de 2 réplicas (`KURZ_NODE_ID_FROM_HOSTNAME=true`: `kurz-0` → node 0, `kurz-1` → node 1, estável quando o pod é recriado), Service,
+  ConfigMap (gerado, com hash no nome: mudar a config reinicia as réplicas), Secrets, probes em `/healthz`, requests/limits e PodDisruptionBudget.
+- `deploy/k8s/overlays/kind` expõe a API e o MinIO por NodePort; `kind-loadtest` acrescenta `KURZ_RATELIMIT=off`.
+- **Os Secrets são de desenvolvimento e estão no repositório de propósito** (valores marcados `DEV-ONLY`/`dev-only`). Nada disso serve fora do kind.
+- Dívidas: Postgres único sem backup; MinIO sem persistência; a liveness em `/healthz` pinga o banco (tolerância alta de 60 s); sem Ingress/TLS; sem HPA; o rate limit é por réplica.

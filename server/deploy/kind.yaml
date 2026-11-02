@@ -1,0 +1,9 @@
+# Cluster kind para estudo: um nó, com a API do Kurz (NodePort 30080) e o MinIO (30900) publicados no localhost.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kurz
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 28080, listenAddress: "127.0.0.1", protocol: TCP }
+      - { containerPort: 30900, hostPort: 29000, listenAddress: "127.0.0.1", protocol: TCP }
