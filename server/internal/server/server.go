@@ -2,11 +2,15 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"kurz/server/internal/channels"
+	"kurz/server/internal/guilds"
 	"kurz/server/internal/identity"
 	"kurz/server/internal/platform/config"
 	"kurz/server/internal/platform/httpx"
@@ -25,6 +29,12 @@ func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
 	tokens := identity.NewTokenIssuer(cfg.JWTSecret, accessTTL)
 	idSvc := identity.NewService(pool, gen, tokens, identity.Config{Registration: cfg.Registration, RefreshTTL: refreshTTL})
 
+	// guilds precisa de channels (canal padrão na criação) e channels precisa de guilds (permissões):
+	// o ciclo é fechado aqui por interfaces, sem import direto entre os pacotes.
+	var chSvc *channels.Service
+	guildSvc := guilds.NewService(pool, gen, lazyDefaults{&chSvc})
+	chSvc = channels.NewService(pool, gen, guildSvc)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
@@ -42,6 +52,16 @@ func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
 		})
 	})
 	idSvc.Mount(mux)
+	auth := identity.Require(tokens)
+	guildSvc.Mount(mux, auth)
+	chSvc.Mount(mux, auth)
 
 	return httpx.AccessLog(httpx.Recover(mux))
+}
+
+// lazyDefaults adia a resolução do serviço de canais, que só existe depois do de guilds.
+type lazyDefaults struct{ ch **channels.Service }
+
+func (l lazyDefaults) CreateDefaults(ctx context.Context, tx pgx.Tx, guildID int64) error {
+	return (*l.ch).CreateDefaults(ctx, tx, guildID)
 }
