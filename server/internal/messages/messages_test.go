@@ -90,9 +90,13 @@ func TestStoreRoundTripAndConstraints(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.Items[0].ReplyToID != nil {
 		t.Fatalf("page = %+v, %v", page, err)
 	}
-	// o CHECK do banco segura texto vazio mesmo se o serviço falhar
-	if _, err := svc.pool.Exec(ctx, `INSERT INTO messages (id, channel_id, author_id, content) VALUES (9, $1, 1, '')`, ch); err == nil {
-		t.Fatal("empty content must violate the CHECK")
+	// o CHECK do banco segura texto longo demais mesmo se o serviço falhar (vazio é permitido desde a 0005: mensagem só com anexo)
+	if _, err := svc.pool.Exec(ctx, `INSERT INTO messages (id, channel_id, author_id, content) VALUES (9, $1, 1, $2)`, ch, strings.Repeat("x", MaxTextRunes+1)); err == nil {
+		t.Fatal("oversized content must violate the CHECK")
+	}
+	// ...e o serviço continua recusando texto vazio sem anexo
+	if _, err := svc.Send(ctx, alice, ch, SendInput{Text: "  "}); err == nil {
+		t.Fatal("blank text without attachments must be rejected")
 	}
 	// reações caem junto com a mensagem
 	if err := svc.AddReaction(ctx, alice, ch, reply.ID, "👍"); err != nil {

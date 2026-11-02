@@ -19,6 +19,7 @@ import (
 	"kurz/server/internal/permissions"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
+	"kurz/server/internal/platform/objstore"
 )
 
 const (
@@ -50,11 +51,14 @@ type Service struct {
 	ids   *ids.Generator
 	perms Perms
 
+	objs       objstore.Store // nil = anexos desligados
+	pendingTTL time.Duration
+
 	onRecord func(Event) // só para testes: observa os eventos gravados
 }
 
 func NewService(pool *pgxpool.Pool, gen *ids.Generator, perms Perms) *Service {
-	return &Service{store: &store{db: pool}, pool: pool, ids: gen, perms: perms}
+	return &Service{store: &store{db: pool}, pool: pool, ids: gen, perms: perms, pendingTTL: PendingTTL}
 }
 
 // Event é o que uma escrita produz para o outbox. Payload é o `d` que o gateway entrega.
@@ -147,20 +151,28 @@ func validEmoji(s string) error {
 }
 
 type SendInput struct {
-	Text      string
-	ReplyToID *int64
-	Nonce     string
+	Text          string
+	ReplyToID     *int64
+	Nonce         string
+	AttachmentIDs []int64
 }
 
 func (s *Service) Send(ctx context.Context, user, channel int64, in SendInput) (Message, error) {
 	if err := s.access(ctx, user, channel, permissions.SendMessages); err != nil {
 		return Message{}, err
 	}
-	if err := validText(in.Text); err != nil {
-		return Message{}, err
+	if len(in.AttachmentIDs) == 0 || strings.TrimSpace(in.Text) != "" { // texto vazio só com anexo
+		if err := validText(in.Text); err != nil {
+			return Message{}, err
+		}
+	} else {
+		in.Text = ""
 	}
 	if len(in.Nonce) > MaxNonceLen {
 		return Message{}, httpx.Validation("nonce must have at most 64 characters")
+	}
+	if err := s.checkAttachments(ctx, user, channel, in.AttachmentIDs); err != nil {
+		return Message{}, err
 	}
 	var out Message
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -182,9 +194,18 @@ func (s *Service) Send(ctx context.Context, user, channel int64, in SendInput) (
 			}
 			return err
 		}
+		if err := s.bindAttachments(ctx, tx, user, channel, id, in.AttachmentIDs); err != nil {
+			return err
+		}
 		m, err := s.store.message(ctx, tx, channel, id)
 		if err != nil {
 			return err
+		}
+		if ms := []Message{m}; len(in.AttachmentIDs) > 0 {
+			if err := s.loadAttachments(ctx, tx, ms); err != nil {
+				return err
+			}
+			m = ms[0]
 		}
 		out = m
 		view := messageView(m)
@@ -234,6 +255,9 @@ func (s *Service) List(ctx context.Context, user, channel int64, in ListInput) (
 	if err := s.store.attachReactions(ctx, s.pool, ms, user); err != nil {
 		return Page{}, err
 	}
+	if err := s.loadAttachments(ctx, s.pool, ms); err != nil {
+		return Page{}, err
+	}
 	p := Page{Items: ms}
 	if len(ms) > 0 {
 		if p.HasMore, err = s.store.hasOlder(ctx, s.pool, channel, ms[0].ID); err != nil {
@@ -252,6 +276,9 @@ func (s *Service) List(ctx context.Context, user, channel int64, in ListInput) (
 func (s *Service) withReactions(ctx context.Context, m Message, viewer int64) (Message, error) {
 	ms := []Message{m}
 	if err := s.store.attachReactions(ctx, s.pool, ms, viewer); err != nil {
+		return Message{}, err
+	}
+	if err := s.loadAttachments(ctx, s.pool, ms); err != nil {
 		return Message{}, err
 	}
 	return ms[0], nil
@@ -319,7 +346,14 @@ func (s *Service) Delete(ctx context.Context, user, channel, id int64) error {
 		if m.Author.ID != user && !a.Perms.Has(permissions.ManageMessages) {
 			return httpx.ErrMissingPermission
 		}
+		keys, err := s.store.objectKeysOfMessage(ctx, tx, id) // as linhas somem em cascata; os objetos, pelo job
+		if err != nil {
+			return err
+		}
 		if err := s.store.delete(ctx, tx, channel, id); err != nil {
+			return err
+		}
+		if err := s.enqueueObjectDeletes(ctx, tx, keys); err != nil {
 			return err
 		}
 		return s.record(ctx, tx, Event{Kind: bus.MessageDelete, ChannelID: channel, MessageID: id, UserID: user, Payload: struct {

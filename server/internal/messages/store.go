@@ -29,15 +29,16 @@ type ReactionCount struct {
 }
 
 type Message struct {
-	ID        int64
-	ChannelID int64
-	Author    Author
-	Content   string
-	ReplyToID *int64
-	CreatedAt time.Time
-	EditedAt  *time.Time
-	Reactions []ReactionCount
-	Nonce     string // só no eco ao remetente; nunca persistido
+	ID          int64
+	ChannelID   int64
+	Author      Author
+	Content     string
+	ReplyToID   *int64
+	CreatedAt   time.Time
+	EditedAt    *time.Time
+	Reactions   []ReactionCount
+	Attachments []Attachment
+	Nonce       string // só no eco ao remetente; nunca persistido
 }
 
 type ReadState struct {

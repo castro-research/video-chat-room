@@ -12,6 +12,7 @@ import (
 
 	"kurz/server/internal/platform/config"
 	"kurz/server/internal/platform/db"
+	"kurz/server/internal/platform/objstore"
 	"kurz/server/internal/server"
 )
 
@@ -40,7 +41,19 @@ func run() error {
 	}
 	defer pool.Close()
 
-	app := server.NewApp(cfg, pool)
+	var opts []server.Option
+	if cfg.S3.Enabled() {
+		store, err := objstore.NewS3(ctx, objstore.S3Config{Endpoint: cfg.S3.Endpoint, PublicEndpoint: cfg.S3.PublicEndpoint,
+			Bucket: cfg.S3.Bucket, AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey, Region: cfg.S3.Region})
+		if err != nil {
+			return err
+		}
+		opts = append(opts, server.WithObjectStore(store))
+		slog.Info("attachments enabled", "endpoint", cfg.S3.Endpoint, "bucket", cfg.S3.Bucket)
+	} else {
+		slog.Info("attachments disabled (KURZ_S3_ENDPOINT not set)")
+	}
+	app := server.NewApp(cfg, pool, opts...)
 	workersCtx, stopWorkers := context.WithCancel(context.Background())
 	workersDone := make(chan struct{})
 	go func() { app.Run(workersCtx); close(workersDone) }()

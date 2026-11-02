@@ -15,18 +15,21 @@ import (
 	"kurz/server/internal/gateway"
 	"kurz/server/internal/guilds"
 	"kurz/server/internal/identity"
+	"kurz/server/internal/jobs"
 	"kurz/server/internal/messages"
 	"kurz/server/internal/permissions"
 	"kurz/server/internal/platform/config"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
+	"kurz/server/internal/platform/objstore"
+	"kurz/server/internal/search"
 )
 
 const (
 	accessTTL  = 15 * time.Minute
 	refreshTTL = 30 * 24 * time.Hour
 	// contractVersion é o major.minor de contract/openapi.yaml que este servidor implementa.
-	contractVersion = "0.4"
+	contractVersion = "0.5"
 )
 
 // App é o monólito montado: o handler HTTP (inclui o WebSocket do gateway) e os workers de fundo
@@ -35,21 +38,48 @@ type App struct {
 	Handler http.Handler
 	bus     *bus.Postgres
 	gateway *gateway.Gateway
+	jobs    *jobs.Worker
 }
+
+// Option ajusta a montagem do App.
+type Option func(*options)
+
+type options struct {
+	store objstore.Store
+	jobs  jobs.Options
+}
+
+// WithObjectStore liga os anexos. Sem ele, os endpoints de anexo respondem 501 e a capability `attachments` não é anunciada.
+func WithObjectStore(s objstore.Store) Option { return func(o *options) { o.store = s } }
+
+// WithJobOptions ajusta o worker de jobs (testes usam polling rápido).
+func WithJobOptions(j jobs.Options) Option { return func(o *options) { o.jobs = j } }
 
 // New devolve só o handler HTTP, sem os workers: serve para testes de REST. O binário usa NewApp.
-func New(cfg config.Config, pool *pgxpool.Pool) http.Handler { return NewApp(cfg, pool).Handler }
+func New(cfg config.Config, pool *pgxpool.Pool, opts ...Option) http.Handler {
+	return NewApp(cfg, pool, opts...).Handler
+}
 
-// Run roda o relay do outbox e o gateway até ctx terminar. Ao terminar, o gateway fecha as conexões (1001).
+// RunJobsOnce roda os jobs prontos agora, na goroutine de quem chamou. Só para testes.
+func (a *App) RunJobsOnce(ctx context.Context) (int, error) { return a.jobs.RunOnce(ctx) }
+
+// Run roda o relay do outbox, o gateway e o worker de jobs até ctx terminar. Ao terminar, o gateway fecha as
+// conexões (1001) e o worker espera os jobs em curso.
 func (a *App) Run(ctx context.Context) {
-	done := make(chan struct{}, 2)
+	done := make(chan struct{}, 3)
 	go func() { a.bus.Run(ctx); done <- struct{}{} }()
 	go func() { a.gateway.Run(ctx); done <- struct{}{} }()
+	go func() { a.jobs.Run(ctx); done <- struct{}{} }()
+	<-done
 	<-done
 	<-done
 }
 
-func NewApp(cfg config.Config, pool *pgxpool.Pool) *App {
+func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	gen := ids.NewGenerator(cfg.NodeID)
 	tokens := identity.NewTokenIssuer(cfg.JWTSecret, accessTTL)
 	idSvc := identity.NewService(pool, gen, tokens, identity.Config{Registration: cfg.Registration, RefreshTTL: refreshTTL})
@@ -61,6 +91,12 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool) *App {
 	chSvc = channels.NewService(pool, gen, guildSvc)
 
 	msgSvc := messages.NewService(pool, gen, channelPerms{chSvc})
+	if o.store != nil {
+		msgSvc.WithStorage(o.store)
+	}
+	searchSvc := search.NewService(pool, channelPerms{chSvc})
+	worker := jobs.NewWorker(pool, gen, o.jobs)
+	msgSvc.RegisterJobs(worker)
 
 	evBus := bus.NewPostgres(pool, gen, bus.Options{})
 	gw := gateway.New(gateway.Config{}, gateway.AuthFunc(tokens.Parse), gatewayDirectory{guilds: guildSvc, channels: chSvc}, evBus)
@@ -73,12 +109,17 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool) *App {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	// `search` é sempre anunciada (só depende do Postgres); `attachments` só com o storage configurado.
+	caps := []string{"text", "realtime", "search"}
+	if msgSvc.HasStorage() {
+		caps = append(caps, "attachments")
+	}
 	mux.HandleFunc("GET /.well-known/kurz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
 			"contract":     contractVersion,
 			"name":         cfg.ServerName,
 			"registration": cfg.Registration,
-			"capabilities": []string{"text", "realtime"},
+			"capabilities": caps,
 		})
 	})
 	idSvc.Mount(mux)
@@ -86,9 +127,10 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool) *App {
 	guildSvc.Mount(mux, auth)
 	chSvc.Mount(mux, auth)
 	msgSvc.Mount(mux, auth)
+	searchSvc.Mount(mux, auth)
 	gw.Mount(mux)
 
-	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw}
+	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw, jobs: worker}
 }
 
 // gatewayDirectory adapta guilds e channels à interface Directory do gateway.

@@ -23,17 +23,25 @@ type ReactionView struct {
 	Me    bool   `json:"me"`
 }
 
+type AttachmentView struct {
+	ID          string `json:"id"`
+	URL         string `json:"url"` // GET pré-assinada; expira (DownloadURLTTL)
+	ContentType string `json:"contentType"`
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`
+}
+
 type MessageView struct {
-	ID          string         `json:"id"`
-	ChannelID   string         `json:"channelId"`
-	Author      UserView       `json:"author"`
-	CreatedAt   time.Time      `json:"createdAt"`
-	EditedAt    *time.Time     `json:"editedAt,omitempty"`
-	Text        string         `json:"text"`
-	ReplyToID   string         `json:"replyToId,omitempty"`
-	Attachments []struct{}     `json:"attachments"` // Plano 5
-	Reactions   []ReactionView `json:"reactions"`
-	Nonce       string         `json:"nonce,omitempty"`
+	ID          string           `json:"id"`
+	ChannelID   string           `json:"channelId"`
+	Author      UserView         `json:"author"`
+	CreatedAt   time.Time        `json:"createdAt"`
+	EditedAt    *time.Time       `json:"editedAt,omitempty"`
+	Text        string           `json:"text"`
+	ReplyToID   string           `json:"replyToId,omitempty"`
+	Attachments []AttachmentView `json:"attachments"`
+	Reactions   []ReactionView   `json:"reactions"`
+	Nonce       string           `json:"nonce,omitempty"`
 }
 
 func messageView(m Message) MessageView {
@@ -42,10 +50,13 @@ func messageView(m Message) MessageView {
 		Author: UserView{ID: ids.Format(m.Author.ID), Username: m.Author.Username, Name: m.Author.Name,
 			Status: "offline", Subtitle: m.Author.Subtitle, Hue: m.Author.Hue},
 		CreatedAt: m.CreatedAt, EditedAt: m.EditedAt, Text: m.Content,
-		Attachments: []struct{}{}, Reactions: make([]ReactionView, len(m.Reactions)), Nonce: m.Nonce,
+		Attachments: make([]AttachmentView, len(m.Attachments)), Reactions: make([]ReactionView, len(m.Reactions)), Nonce: m.Nonce,
 	}
 	if m.ReplyToID != nil {
 		v.ReplyToID = ids.Format(*m.ReplyToID)
+	}
+	for i, a := range m.Attachments {
+		v.Attachments[i] = AttachmentView{ID: ids.Format(a.ID), URL: a.URL, ContentType: a.ContentType, Name: a.Filename, Size: a.Size}
 	}
 	for i, r := range m.Reactions {
 		v.Reactions[i] = ReactionView{Emoji: r.Emoji, Count: r.Count, Me: r.Me}
@@ -70,6 +81,7 @@ func readStateView(r ReadState) ReadStateView {
 func (s *Service) Mount(mux *http.ServeMux, auth func(httpx.Handler) httpx.Handler) {
 	h := func(pattern string, fn httpx.Handler) { mux.HandleFunc(pattern, httpx.Wrap(auth(fn))) }
 	h("POST /v1/channels/{channelId}/messages", s.handleSend)
+	h("POST /v1/channels/{channelId}/attachments", s.handleUpload)
 	h("GET /v1/channels/{channelId}/messages", s.handleList)
 	h("PATCH /v1/channels/{channelId}/messages/{messageId}", s.handleEdit)
 	h("DELETE /v1/channels/{channelId}/messages/{messageId}", s.handleDelete)
@@ -104,11 +116,20 @@ func (s *Service) handleSend(w http.ResponseWriter, r *http.Request) error {
 		Text      string `json:"text"`
 		ReplyToID string `json:"replyToId"`
 		Nonce     string `json:"nonce"`
+		// AttachmentIDs são uploads já feitos (POST /attachments + PUT na URL).
+		AttachmentIDs []string `json:"attachmentIds"`
 	}
 	if err := httpx.Decode(r, &req); err != nil {
 		return err
 	}
 	in := SendInput{Text: req.Text, Nonce: req.Nonce}
+	for _, raw := range req.AttachmentIDs {
+		id, err := ids.Parse(raw)
+		if err != nil {
+			return httpx.Validation("attachmentIds is invalid")
+		}
+		in.AttachmentIDs = append(in.AttachmentIDs, id)
+	}
 	if req.ReplyToID != "" {
 		id, err := ids.Parse(req.ReplyToID)
 		if err != nil {
@@ -277,5 +298,34 @@ func (s *Service) handleGuildRead(w http.ResponseWriter, r *http.Request) error 
 		items[i] = readStateView(x)
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+	return nil
+}
+
+func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) error {
+	user, channel, _, err := route(r, false)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		Filename    string `json:"filename"`
+		ContentType string `json:"contentType"`
+		Size        int64  `json:"size"`
+	}
+	if err := httpx.Decode(r, &req); err != nil {
+		return err
+	}
+	up, err := s.RequestUpload(r.Context(), user, channel, UploadInput{Filename: req.Filename, ContentType: req.ContentType, Size: req.Size})
+	if err != nil {
+		return err
+	}
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{
+		"id":          ids.Format(up.Attachment.ID),
+		"uploadUrl":   up.URL,
+		"method":      "PUT",
+		"expiresAt":   up.ExpiresAt.UTC(),
+		"name":        up.Attachment.Filename,
+		"contentType": up.Attachment.ContentType,
+		"size":        up.Attachment.Size,
+	})
 	return nil
 }
