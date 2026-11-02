@@ -167,3 +167,47 @@ func TestConcurrentSendsKeepIDOrderEqualToCommitOrder(t *testing.T) {
 		t.Fatalf("%d messages", n)
 	}
 }
+
+// Cada escrita grava o evento no outbox na mesma transação: escrita que falha não deixa evento.
+func TestWritesEnqueueOutboxEvents(t *testing.T) {
+	ctx := context.Background()
+	svc, ch := setup(t, fakePerms{1: permissions.DefaultEveryone, 2: permissions.DefaultEveryone})
+	m, err := svc.Send(ctx, 1, ch, SendInput{Text: "a", Nonce: "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Edit(ctx, 1, ch, m.ID, "b"); err != nil {
+		t.Fatal(err)
+	}
+	_ = svc.AddReaction(ctx, 2, ch, m.ID, "x")
+	_ = svc.RemoveReaction(ctx, 2, ch, m.ID, "x", 0)
+	_ = svc.Delete(ctx, 1, ch, m.ID)
+	// falhas de validação/permissão não deixam rastro
+	_, _ = svc.Send(ctx, 1, ch, SendInput{Text: ""})
+	_ = svc.Delete(ctx, 2, ch, m.ID)
+
+	rows, err := svc.pool.Query(ctx, `SELECT type, guild_id, channel_id, payload FROM outbox ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var kinds []string
+	for rows.Next() {
+		var typ string
+		var g, c int64
+		var payload map[string]any
+		if err := rows.Scan(&typ, &g, &c, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if g != 500 || c != ch {
+			t.Fatalf("%s: guild %d channel %d", typ, g, c)
+		}
+		if typ == "message.create" && (payload["nonce"] != "n1" || payload["text"] != "a") {
+			t.Fatalf("create payload = %v", payload)
+		}
+		kinds = append(kinds, typ)
+	}
+	if got, want := strings.Join(kinds, " "), "message.create message.update reaction.add reaction.remove message.delete"; got != want {
+		t.Fatalf("outbox = %q", got)
+	}
+}

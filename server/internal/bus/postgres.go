@@ -85,7 +85,7 @@ func Enqueue(ctx context.Context, q Execer, e Event) error {
 		e.Payload = json.RawMessage(`{}`)
 	}
 	if _, err := q.Exec(ctx,
-		`INSERT INTO outbox (id, type, guild_id, channel_id, payload) VALUES ($1, $2, NULLIF($3, 0), NULLIF($4, 0), $5)`,
+		`INSERT INTO outbox (id, type, guild_id, channel_id, payload) VALUES ($1, $2, NULLIF($3::bigint, 0), NULLIF($4::bigint, 0), $5)`,
 		e.ID, e.Type, e.GuildID, e.ChannelID, []byte(e.Payload)); err != nil {
 		return fmt.Errorf("enqueue %s: %w", e.Type, err)
 	}

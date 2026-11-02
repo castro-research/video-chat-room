@@ -96,12 +96,12 @@ func TestPublishReachesSubscriber(t *testing.T) {
 	start(t, b)
 	listening(t, pool, 1)
 
-	err := b.Publish(context.Background(), bus.Event{Type: bus.MessageCreate, GuildID: 7, ChannelID: 9, Payload: json.RawMessage(`{"x":1}`)})
+	err := b.Publish(context.Background(), bus.Event{Type: bus.MessageCreate, GuildID: 1<<40 + 7, ChannelID: 1<<41 + 9, Payload: json.RawMessage(`{"x":1}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	e := c.next(t)
-	if e.Type != bus.MessageCreate || e.GuildID != 7 || e.ChannelID != 9 || strings.ReplaceAll(string(e.Payload), " ", "") != `{"x":1}` || e.ID == 0 {
+	if e.Type != bus.MessageCreate || e.GuildID != 1<<40+7 || e.ChannelID != 1<<41+9 || strings.ReplaceAll(string(e.Payload), " ", "") != `{"x":1}` || e.ID == 0 {
 		t.Fatalf("event = %+v", e)
 	}
 	var pub *time.Time

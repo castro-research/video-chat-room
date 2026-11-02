@@ -4,8 +4,10 @@ package messages
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"kurz/server/internal/bus"
 	"kurz/server/internal/permissions"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
@@ -54,21 +57,41 @@ func NewService(pool *pgxpool.Pool, gen *ids.Generator, perms Perms) *Service {
 	return &Service{store: &store{db: pool}, pool: pool, ids: gen, perms: perms}
 }
 
-// Event é o que uma escrita produz para o outbox.
+// Event é o que uma escrita produz para o outbox. Payload é o `d` que o gateway entrega.
 type Event struct {
 	Kind      string // message.create, message.update, message.delete, reaction.add, reaction.remove
 	ChannelID int64
 	MessageID int64
 	UserID    int64
+	Payload   any
 }
 
-// record é o ponto onde o Plano 4 grava o evento na tabela outbox, DENTRO da mesma transação da escrita.
-// Hoje não faz nada.
-func (s *Service) record(_ context.Context, _ pgx.Tx, e Event) error {
+// record grava o evento no outbox, DENTRO da mesma transação da escrita (RNF5).
+func (s *Service) record(ctx context.Context, tx pgx.Tx, e Event) error {
 	if s.onRecord != nil {
 		s.onRecord(e)
 	}
-	return nil
+	var guild int64
+	if err := tx.QueryRow(ctx, `SELECT guild_id FROM channels WHERE id = $1`, e.ChannelID).Scan(&guild); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(e.Payload)
+	if err != nil {
+		return err
+	}
+	return bus.Enqueue(ctx, tx, bus.Event{ID: s.ids.Next(), Type: e.Kind, GuildID: guild, ChannelID: e.ChannelID, Payload: payload})
+}
+
+type reactionPayload struct {
+	ChannelID string `json:"channelId"`
+	MessageID string `json:"messageId"`
+	UserID    string `json:"userId"`
+	Emoji     string `json:"emoji"`
+}
+
+func reactionEvent(kind string, channel, message, user int64, emoji string) Event {
+	return Event{Kind: kind, ChannelID: channel, MessageID: message, UserID: user, Payload: reactionPayload{
+		ChannelID: ids.Format(channel), MessageID: ids.Format(message), UserID: ids.Format(user), Emoji: emoji}}
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
@@ -164,7 +187,9 @@ func (s *Service) Send(ctx context.Context, user, channel int64, in SendInput) (
 			return err
 		}
 		out = m
-		return s.record(ctx, tx, Event{Kind: "message.create", ChannelID: channel, MessageID: id, UserID: user})
+		view := messageView(m)
+		view.Nonce = in.Nonce // só o remetente recebe o nonce de volta (o gateway tira dos demais)
+		return s.record(ctx, tx, Event{Kind: bus.MessageCreate, ChannelID: channel, MessageID: id, UserID: user, Payload: view})
 	})
 	if err != nil {
 		return Message{}, err
@@ -258,7 +283,12 @@ func (s *Service) Edit(ctx context.Context, user, channel, id int64, text string
 		if out, err = s.store.message(ctx, tx, channel, id); err != nil {
 			return err
 		}
-		return s.record(ctx, tx, Event{Kind: "message.update", ChannelID: channel, MessageID: id, UserID: user})
+		return s.record(ctx, tx, Event{Kind: bus.MessageUpdate, ChannelID: channel, MessageID: id, UserID: user, Payload: struct {
+			ID        string     `json:"id"`
+			ChannelID string     `json:"channelId"`
+			Text      string     `json:"text"`
+			EditedAt  *time.Time `json:"editedAt"`
+		}{ids.Format(id), ids.Format(channel), out.Content, out.EditedAt}})
 	})
 	if errors.Is(err, errNotFound) {
 		return Message{}, httpx.ErrNotFound
@@ -292,7 +322,10 @@ func (s *Service) Delete(ctx context.Context, user, channel, id int64) error {
 		if err := s.store.delete(ctx, tx, channel, id); err != nil {
 			return err
 		}
-		return s.record(ctx, tx, Event{Kind: "message.delete", ChannelID: channel, MessageID: id, UserID: user})
+		return s.record(ctx, tx, Event{Kind: bus.MessageDelete, ChannelID: channel, MessageID: id, UserID: user, Payload: struct {
+			ID        string `json:"id"`
+			ChannelID string `json:"channelId"`
+		}{ids.Format(id), ids.Format(channel)}})
 	})
 	if errors.Is(err, errNotFound) {
 		return httpx.ErrNotFound
@@ -322,7 +355,7 @@ func (s *Service) AddReaction(ctx context.Context, user, channel, id int64, emoj
 		if err := s.store.addReaction(ctx, tx, id, user, emoji); err != nil {
 			return err
 		}
-		return s.record(ctx, tx, Event{Kind: "reaction.add", ChannelID: channel, MessageID: id, UserID: user})
+		return s.record(ctx, tx, reactionEvent(bus.ReactionAdd, channel, id, user, emoji))
 	})
 	if errors.Is(err, errNotFound) {
 		return httpx.ErrNotFound
@@ -356,7 +389,7 @@ func (s *Service) RemoveReaction(ctx context.Context, user, channel, id int64, e
 		if err := s.store.removeReaction(ctx, tx, id, target, emoji); err != nil {
 			return err
 		}
-		return s.record(ctx, tx, Event{Kind: "reaction.remove", ChannelID: channel, MessageID: id, UserID: target})
+		return s.record(ctx, tx, reactionEvent(bus.ReactionRemove, channel, id, target, emoji))
 	})
 	if errors.Is(err, errNotFound) {
 		return httpx.ErrNotFound
