@@ -7,17 +7,22 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"kurz/server/internal/platform/config"
 	"kurz/server/internal/platform/db"
+	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/objstore"
+	"kurz/server/internal/platform/telemetry"
 	"kurz/server/internal/server"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	slog.SetDefault(slog.New(httpx.ContextHandler{Handler: slog.NewJSONHandler(os.Stdout, nil)}))
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -35,7 +40,23 @@ func run() error {
 	if err := db.Migrate(ctx, cfg.DatabaseURL); err != nil {
 		return err
 	}
-	pool, err := db.Open(ctx, cfg.DatabaseURL)
+	shutdownTelemetry, err := telemetry.Setup(ctx, cfg.OtelEndpoint, "kurz", strconv.FormatInt(cfg.NodeID, 10))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTelemetry(c)
+	}()
+	var dbTweaks []func(*pgxpool.Config)
+	handlerWrap := func(h http.Handler) http.Handler { return h }
+	if cfg.OtelEndpoint != "" {
+		dbTweaks = append(dbTweaks, telemetry.PGX)
+		handlerWrap = telemetry.HTTP
+		slog.Info("tracing enabled", "endpoint", cfg.OtelEndpoint)
+	}
+	pool, err := db.Open(ctx, cfg.DatabaseURL, dbTweaks...)
 	if err != nil {
 		return err
 	}
@@ -58,6 +79,7 @@ func run() error {
 	} else {
 		slog.Info("voice disabled (KURZ_SECRET and KURZ_SFU_URL not set)")
 	}
+	slog.Info("config", "node_id", cfg.NodeID, "ratelimit", cfg.RateLimit.Enabled, "trusted_proxy", cfg.TrustedProxy)
 	app := server.NewApp(cfg, pool, opts...)
 	workersCtx, stopWorkers := context.WithCancel(context.Background())
 	workersDone := make(chan struct{})
@@ -65,7 +87,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           app.Handler,
+		Handler:           handlerWrap(app.Handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,

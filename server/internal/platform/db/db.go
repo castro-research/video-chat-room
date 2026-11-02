@@ -14,8 +14,16 @@ import (
 	"kurz/server/migrations"
 )
 
-func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
-	pool, err := pgxpool.New(ctx, url)
+// Open abre o pool. tweaks ajustam a config antes de conectar (por exemplo, instalar o tracer do OpenTelemetry).
+func Open(ctx context.Context, url string, tweaks ...func(*pgxpool.Config)) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	for _, t := range tweaks {
+		t(cfg)
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open pool: %w", err)
 	}

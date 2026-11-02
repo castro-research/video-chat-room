@@ -102,6 +102,8 @@ type Gateway struct {
 	cache  *permCache
 
 	slowDisconnects atomic.Int64
+	delivered       atomic.Int64
+	dropped         atomic.Int64
 }
 
 func New(cfg Config, auth Authenticator, dir Directory, b bus.Bus) *Gateway {
@@ -122,12 +124,15 @@ type Stats struct {
 	Sessions        int
 	Connections     int
 	SlowDisconnects int64
+	Delivered       int64 // eventos enfileirados para sessões
+	Dropped         int64 // eventos que estouraram a fila do cliente
 }
 
 func (g *Gateway) Stats() Stats {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return Stats{Sessions: len(g.sessions), Connections: len(g.conns), SlowDisconnects: g.slowDisconnects.Load()}
+	return Stats{Sessions: len(g.sessions), Connections: len(g.conns), SlowDisconnects: g.slowDisconnects.Load(),
+		Delivered: g.delivered.Load(), Dropped: g.dropped.Load()}
 }
 
 // Mount registra GET /v1/gateway.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,8 @@ import (
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
 	"kurz/server/internal/platform/objstore"
+	"kurz/server/internal/platform/obs"
+	"kurz/server/internal/platform/ratelimit"
 	"kurz/server/internal/search"
 	"kurz/server/internal/voice"
 )
@@ -42,6 +45,7 @@ type App struct {
 	gateway *gateway.Gateway
 	jobs    *jobs.Worker
 	voice   *voice.Service
+	limits  []*ratelimit.Limiter
 }
 
 // Option ajusta a montagem do App.
@@ -74,6 +78,9 @@ func (a *App) RunJobsOnce(ctx context.Context) (int, error) { return a.jobs.RunO
 // conexões (1001) e o worker espera os jobs em curso.
 func (a *App) Run(ctx context.Context) {
 	done := make(chan struct{}, 4)
+	for _, l := range a.limits {
+		go l.Run(ctx, time.Minute) // varre buckets ociosos; termina com ctx, sem entrar no `done`
+	}
 	go func() { a.bus.Run(ctx); done <- struct{}{} }()
 	go func() { a.gateway.Run(ctx); done <- struct{}{} }()
 	go func() { a.jobs.Run(ctx); done <- struct{}{} }()
@@ -161,7 +168,34 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	voiceSvc.Mount(mux, auth)
 	gw.Mount(mux)
 
-	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw, jobs: worker, voice: voiceSvc}
+	metrics := obs.New(pool, func() obs.GatewayStats {
+		st := gw.Stats()
+		return obs.GatewayStats{Connections: st.Connections, Sessions: st.Sessions, Delivered: st.Delivered, Dropped: st.Dropped, SlowKills: st.SlowDisconnects}
+	})
+	// Interno: sem auth e fora do rate limit (o limitador só olha escritas, e a ordem abaixo o deixa de fora de qualquer forma).
+	mux.Handle("GET /metrics", metrics.Handler())
+
+	var h http.Handler = mux
+	app := &App{bus: evBus, gateway: gw, jobs: worker, voice: voiceSvc}
+	if rl := cfg.RateLimit; rl.Enabled {
+		m := &ratelimit.Middleware{
+			Auth:       ratelimit.New(rl.AuthPerMin/60, rl.AuthBurst, nil),
+			Write:      ratelimit.New(rl.WritePerSec, rl.WriteBurst, nil),
+			TrustProxy: cfg.TrustedProxy,
+			User: func(r *http.Request) (int64, bool) {
+				tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+				if !ok {
+					return 0, false
+				}
+				uid, err := tokens.Parse(tok)
+				return uid, err == nil
+			},
+		}
+		app.limits = []*ratelimit.Limiter{m.Auth, m.Write}
+		h = m.Handler(h)
+	}
+	app.Handler = httpx.WithRequestID(metrics.Middleware(httpx.AccessLog(httpx.Recover(h))))
+	return app
 }
 
 // gatewayDirectory adapta guilds e channels à interface Directory do gateway.

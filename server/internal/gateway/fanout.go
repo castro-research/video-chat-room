@@ -111,8 +111,11 @@ func (g *Gateway) route(ctx context.Context, e bus.Event) {
 
 func (g *Gateway) send(s *session, typ string, d json.RawMessage) {
 	if slow := s.deliver(typ, d); slow != nil {
+		g.dropped.Add(1)
 		g.slow(slow)
+		return
 	}
+	g.delivered.Add(1)
 }
 
 func (g *Gateway) canView(ctx context.Context, guild, user, channel int64) (bool, error) {

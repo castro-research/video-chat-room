@@ -2,6 +2,7 @@
 package httpx
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -32,10 +33,12 @@ func Validation(message string) *Error {
 }
 
 // WriteError escreve err como ApiError. Erros que não são *Error viram 500 sem vazar a mensagem.
-func WriteError(w http.ResponseWriter, err error) {
+func WriteError(w http.ResponseWriter, err error) { writeError(context.Background(), w, err) }
+
+func writeError(ctx context.Context, w http.ResponseWriter, err error) {
 	var he *Error
 	if !errors.As(err, &he) {
-		slog.Error("unhandled error", "err", err)
+		slog.ErrorContext(ctx, "unhandled error", "err", err)
 		he = errInternal
 	}
 	WriteJSON(w, he.Status, map[string]string{"code": he.Code, "message": he.Message})
@@ -47,7 +50,7 @@ type Handler func(http.ResponseWriter, *http.Request) error
 func Wrap(h Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := h(w, r); err != nil {
-			WriteError(w, err)
+			writeError(r.Context(), w, err)
 		}
 	}
 }

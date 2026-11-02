@@ -1,9 +1,11 @@
 package httpx
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,5 +106,30 @@ func TestAccessLogKeepsResponseControllerWorking(t *testing.T) {
 	}
 	if !rec.Flushed {
 		t.Fatal("recorder was not flushed")
+	}
+}
+
+func TestRequestIDAndContextLogger(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(ContextHandler{Handler: slog.NewJSONHandler(&buf, nil)}))
+	defer slog.SetDefault(old)
+
+	h := WithRequestID(AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })))
+	for _, tc := range []struct{ in, want string }{{"abc-123", "abc-123"}, {"", ""}, {"tem espaço", ""}} {
+		buf.Reset()
+		r := httptest.NewRequest("GET", "/x", nil)
+		if tc.in != "" {
+			r.Header.Set(RequestIDHeader, tc.in)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		got := w.Header().Get(RequestIDHeader)
+		if got == "" || (tc.want != "" && got != tc.want) {
+			t.Fatalf("in=%q header=%q", tc.in, got)
+		}
+		if !strings.Contains(buf.String(), `"request_id":"`+got+`"`) {
+			t.Fatalf("access log lacks request_id %q: %s", got, buf.String())
+		}
 	}
 }
