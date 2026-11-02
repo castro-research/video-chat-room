@@ -102,8 +102,10 @@ func (s *store) insertGuild(ctx context.Context, tx pgx.Tx, id int64, name strin
 	return g, nil
 }
 
-func (s *store) guild(ctx context.Context, id int64) (Guild, error) {
-	return scanGuild(s.db.QueryRow(ctx, `SELECT `+guildCols+` FROM guilds WHERE id = $1`, id))
+func (s *store) guild(ctx context.Context, id int64) (Guild, error) { return s.guildIn(ctx, s.db, id) }
+
+func (s *store) guildIn(ctx context.Context, q querier, id int64) (Guild, error) {
+	return scanGuild(q.QueryRow(ctx, `SELECT `+guildCols+` FROM guilds WHERE id = $1`, id))
 }
 
 func (s *store) guildsOf(ctx context.Context, user int64) ([]Guild, error) {
@@ -125,8 +127,8 @@ func (s *store) guildsOf(ctx context.Context, user int64) ([]Guild, error) {
 	return out, rows.Err()
 }
 
-func (s *store) deleteGuild(ctx context.Context, id int64) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM guilds WHERE id = $1`, id)
+func (s *store) deleteGuild(ctx context.Context, q querier, id int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM guilds WHERE id = $1`, id)
 	return err
 }
 
@@ -170,8 +172,8 @@ func (s *store) subject(ctx context.Context, q querier, guild, user int64) (perm
 	return sub, nil
 }
 
-func (s *store) setOwner(ctx context.Context, guild, owner int64) error {
-	_, err := s.db.Exec(ctx, `UPDATE guilds SET owner_id = $2 WHERE id = $1`, guild, owner)
+func (s *store) setOwner(ctx context.Context, q querier, guild, owner int64) error {
+	_, err := q.Exec(ctx, `UPDATE guilds SET owner_id = $2 WHERE id = $1`, guild, owner)
 	return err
 }
 
@@ -208,8 +210,8 @@ func (s *store) members(ctx context.Context, guild, after int64, limit int) ([]M
 	return items, total, err
 }
 
-func (s *store) member(ctx context.Context, guild, user int64) (Member, error) {
-	rows, err := s.db.Query(ctx, memberSelect+` WHERE m.guild_id = $1 AND m.user_id = $2`, guild, user)
+func (s *store) member(ctx context.Context, q querier, guild, user int64) (Member, error) {
+	rows, err := q.Query(ctx, memberSelect+` WHERE m.guild_id = $1 AND m.user_id = $2`, guild, user)
 	if err != nil {
 		return Member{}, err
 	}
@@ -234,14 +236,14 @@ func (s *store) removeMember(ctx context.Context, q querier, guild, user int64) 
 	return nil
 }
 
-func (s *store) addMemberRole(ctx context.Context, guild, user, role int64) error {
-	_, err := s.db.Exec(ctx,
+func (s *store) addMemberRole(ctx context.Context, q querier, guild, user, role int64) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO member_roles (guild_id, user_id, role_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, guild, user, role)
 	return err
 }
 
-func (s *store) removeMemberRole(ctx context.Context, guild, user, role int64) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3`, guild, user, role)
+func (s *store) removeMemberRole(ctx context.Context, q querier, guild, user, role int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM member_roles WHERE guild_id = $1 AND user_id = $2 AND role_id = $3`, guild, user, role)
 	return err
 }
 
@@ -287,22 +289,13 @@ func (s *store) role(ctx context.Context, guild, id int64) (Role, error) {
 }
 
 // insertRole põe o papel na posição 1 (logo acima de @everyone), empurrando os outros para cima.
-func (s *store) insertRole(ctx context.Context, id, guild int64, name string, perms permissions.Perm) (Role, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return Role{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+func (s *store) insertRole(ctx context.Context, tx pgx.Tx, id, guild int64, name string, perms permissions.Perm) (Role, error) {
 	if _, err := tx.Exec(ctx, `UPDATE roles SET position = position + 1 WHERE guild_id = $1 AND position >= 1`, guild); err != nil {
 		return Role{}, err
 	}
-	r, err := scanRole(tx.QueryRow(ctx,
+	return scanRole(tx.QueryRow(ctx,
 		`INSERT INTO roles (id, guild_id, name, permissions, position) VALUES ($1, $2, $3, $4, 1) RETURNING `+roleCols,
 		id, guild, name, int64(perms)))
-	if err != nil {
-		return Role{}, err
-	}
-	return r, tx.Commit(ctx)
 }
 
 func (s *store) updateRole(ctx context.Context, q querier, guild, id int64, name *string, perms *permissions.Perm) (Role, error) {
@@ -325,8 +318,8 @@ func (s *store) setRolePositions(ctx context.Context, q querier, order []int64) 
 	return nil
 }
 
-func (s *store) deleteRole(ctx context.Context, guild, id int64) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM roles WHERE guild_id = $1 AND id = $2`, guild, id)
+func (s *store) deleteRole(ctx context.Context, q querier, guild, id int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM roles WHERE guild_id = $1 AND id = $2`, guild, id)
 	return err
 }
 
@@ -375,15 +368,9 @@ func (s *store) deleteInvite(ctx context.Context, code string) error {
 	return err
 }
 
-// join consome um uso do convite e cria o membro, tudo numa transação que trava o convite
-// banned é checado antes de tudo.
-func (s *store) join(ctx context.Context, code string, user int64, now time.Time) (Guild, bool, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return Guild{}, false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
+// join consome um uso do convite e cria o membro, na transação do chamador, que trava o convite.
+// banned é checado antes de tudo. joined = false quando o usuário já era membro.
+func (s *store) join(ctx context.Context, tx pgx.Tx, code string, user int64, now time.Time) (g Guild, joined bool, err error) {
 	inv, err := scanInvite(tx.QueryRow(ctx, `SELECT `+inviteCols+` FROM invites WHERE code = $1 FOR UPDATE`, code))
 	if err != nil {
 		return Guild{}, false, err
@@ -395,7 +382,7 @@ func (s *store) join(ctx context.Context, code string, user int64, now time.Time
 	if banned {
 		return Guild{}, false, errBanned
 	}
-	g, err := scanGuild(tx.QueryRow(ctx, `SELECT `+guildCols+` FROM guilds WHERE id = $1`, inv.GuildID))
+	g, err = scanGuild(tx.QueryRow(ctx, `SELECT `+guildCols+` FROM guilds WHERE id = $1`, inv.GuildID))
 	if err != nil {
 		return Guild{}, false, err
 	}
@@ -415,30 +402,24 @@ func (s *store) join(ctx context.Context, code string, user int64, now time.Time
 	if _, err := tx.Exec(ctx, `UPDATE invites SET uses = uses + 1 WHERE code = $1`, code); err != nil {
 		return Guild{}, false, err
 	}
-	return g, true, tx.Commit(ctx)
+	return g, true, nil
 }
 
 var errBanned = errors.New("guilds: banned")
 
 // ---- bans ----
 
-// ban grava o ban e tira o membro (se for) na mesma transação. Reban atualiza o motivo.
-func (s *store) ban(ctx context.Context, guild, user, by int64, reason string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
+// ban grava o ban e tira o membro (se for) na transação do chamador. Reban atualiza o motivo.
+// wasMember diz se o alvo foi removido da guild agora.
+func (s *store) ban(ctx context.Context, tx pgx.Tx, guild, user, by int64, reason string) (wasMember bool, err error) {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO bans (guild_id, user_id, banned_by, reason) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (guild_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, banned_by = EXCLUDED.banned_by`,
 		guild, user, by, reason); err != nil {
-		return err
+		return false, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guild, user); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	tag, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guild, user)
+	return tag.RowsAffected() > 0, err
 }
 
 func (s *store) unban(ctx context.Context, guild, user int64) error {

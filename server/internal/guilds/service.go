@@ -5,6 +5,7 @@ package guilds
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"kurz/server/internal/bus"
 	"kurz/server/internal/permissions"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
@@ -50,6 +52,42 @@ func (s *Service) RolePosition(ctx context.Context, guildID, roleID int64) (int,
 		return 0, httpx.ErrNotFound
 	}
 	return r.Position, err
+}
+
+// inTx roda fn numa transação; eventos gravados com emit nela saem junto com a escrita (outbox).
+func (s *Service) inTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// emit grava um evento da guild no outbox, na transação tx. Os ids no payload seguem o formato da API (string).
+func (s *Service) emit(ctx context.Context, tx pgx.Tx, typ string, guildID int64, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return bus.Enqueue(ctx, tx, bus.Event{ID: s.ids.Next(), Type: typ, GuildID: guildID, Payload: raw})
+}
+
+func (s *Service) emitMemberLeave(ctx context.Context, tx pgx.Tx, guildID, userID int64, reason string) error {
+	return s.emit(ctx, tx, bus.MemberLeave, guildID, map[string]string{
+		"guildId": ids.Format(guildID), "userId": ids.Format(userID), "reason": reason})
+}
+
+func (s *Service) emitMemberUpdate(ctx context.Context, tx pgx.Tx, typ string, guildID, userID int64) error {
+	m, err := s.store.member(ctx, tx, guildID, userID)
+	if err != nil {
+		return err
+	}
+	return s.emit(ctx, tx, typ, guildID, map[string]any{
+		"guildId": ids.Format(guildID), "userId": ids.Format(userID), "member": memberView(m)})
 }
 
 func (s *Service) subject(ctx context.Context, guildID, userID int64) (permissions.Subject, error) {
@@ -96,6 +134,9 @@ func (s *Service) Create(ctx context.Context, user int64, name string) (Guild, e
 	if err := s.channels.CreateDefaults(ctx, tx, g.ID); err != nil {
 		return Guild{}, err
 	}
+	if err := s.emit(ctx, tx, bus.GuildCreate, g.ID, map[string]any{"userId": ids.Format(user), "guild": guildView(g)}); err != nil {
+		return Guild{}, err
+	}
 	return g, tx.Commit(ctx)
 }
 
@@ -118,7 +159,12 @@ func (s *Service) Delete(ctx context.Context, user, guildID int64) error {
 	if !sub.IsOwner {
 		return errOwnerOnly
 	}
-	return s.store.deleteGuild(ctx, guildID)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := s.store.deleteGuild(ctx, tx, guildID); err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, bus.GuildDelete, guildID, map[string]string{"id": ids.Format(guildID)})
+	})
 }
 
 func (s *Service) TransferOwnership(ctx context.Context, user, guildID, newOwner int64) error {
@@ -135,7 +181,16 @@ func (s *Service) TransferOwnership(ctx context.Context, user, guildID, newOwner
 	if _, err := s.subject(ctx, guildID, newOwner); err != nil {
 		return httpx.Validation("the new owner must be a member")
 	}
-	return s.store.setOwner(ctx, guildID, newOwner)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := s.store.setOwner(ctx, tx, guildID, newOwner); err != nil {
+			return err
+		}
+		g, err := s.store.guildIn(ctx, tx, guildID)
+		if err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, bus.GuildUpdate, guildID, guildView(g))
+	})
 }
 
 // ---- membros ----
@@ -155,7 +210,7 @@ func (s *Service) Leave(ctx context.Context, user, guildID int64) error {
 	if sub.IsOwner {
 		return httpx.NewError(http.StatusConflict, "owner_cannot_leave", "transfer ownership or delete the guild first")
 	}
-	return s.store.removeMember(ctx, s.pool, guildID, user)
+	return s.removeMember(ctx, guildID, user, "leave")
 }
 
 // target carrega o alvo de uma ação de moderação. allowOutsider: o alvo pode não ser membro (ban).
@@ -188,7 +243,16 @@ func (s *Service) Kick(ctx context.Context, user, guildID, targetID int64) error
 	if !permissions.CanManageMember(actor, t) {
 		return httpx.ErrHierarchy
 	}
-	return s.store.removeMember(ctx, s.pool, guildID, targetID)
+	return s.removeMember(ctx, guildID, targetID, "kick")
+}
+
+func (s *Service) removeMember(ctx context.Context, guildID, userID int64, reason string) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := s.store.removeMember(ctx, tx, guildID, userID); err != nil {
+			return err
+		}
+		return s.emitMemberLeave(ctx, tx, guildID, userID, reason)
+	})
 }
 
 func (s *Service) Ban(ctx context.Context, user, guildID, targetID int64, reason string) error {
@@ -209,7 +273,13 @@ func (s *Service) Ban(ctx context.Context, user, guildID, targetID int64, reason
 	if !permissions.CanManageMember(actor, t) {
 		return httpx.ErrHierarchy
 	}
-	err = s.store.ban(ctx, guildID, targetID, user, reason)
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		wasMember, err := s.store.ban(ctx, tx, guildID, targetID, user, reason)
+		if err != nil || !wasMember {
+			return err
+		}
+		return s.emitMemberLeave(ctx, tx, guildID, targetID, "ban")
+	})
 	if isFKViolation(err) {
 		return httpx.ErrNotFound // usuário inexistente
 	}
@@ -294,7 +364,15 @@ func (s *Service) CreateRole(ctx context.Context, user, guildID int64, in RoleIn
 	if !permissions.CanGrant(actor.Base(), p) {
 		return Role{}, httpx.ErrMissingPermission
 	}
-	return s.store.insertRole(ctx, s.ids.Next(), guildID, name, p)
+	var role Role
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if role, err = s.store.insertRole(ctx, tx, s.ids.Next(), guildID, name, p); err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, bus.RoleCreate, guildID, map[string]any{"guildId": ids.Format(guildID), "role": roleView(role)})
+	})
+	return role, err
 }
 
 func (s *Service) UpdateRole(ctx context.Context, user, guildID, roleID int64, in RoleInput) (Role, error) {
@@ -371,6 +449,9 @@ func (s *Service) UpdateRole(ctx context.Context, user, guildID, roleID int64, i
 		}
 		updated.Position = idx + 1
 	}
+	if err := s.emit(ctx, tx, bus.RoleUpdate, guildID, map[string]any{"guildId": ids.Format(guildID), "role": roleView(updated)}); err != nil {
+		return Role{}, err
+	}
 	return updated, tx.Commit(ctx)
 }
 
@@ -405,7 +486,12 @@ func (s *Service) DeleteRole(ctx context.Context, user, guildID, roleID int64) e
 	if !permissions.CanManageRole(actor, role.Position) {
 		return httpx.ErrHierarchy
 	}
-	return s.store.deleteRole(ctx, guildID, roleID)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		if err := s.store.deleteRole(ctx, tx, guildID, roleID); err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, bus.RoleDelete, guildID, map[string]string{"guildId": ids.Format(guildID), "roleId": ids.Format(roleID)})
+	})
 }
 
 // SetMemberRole atribui (grant) ou tira um papel de um membro.
@@ -440,10 +526,18 @@ func (s *Service) SetMemberRole(ctx context.Context, user, guildID, targetID, ro
 	if targetID != user && !permissions.CanManageMember(actor, t) {
 		return httpx.ErrHierarchy
 	}
-	if grant {
-		return s.store.addMemberRole(ctx, guildID, targetID, roleID)
-	}
-	return s.store.removeMemberRole(ctx, guildID, targetID, roleID)
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if grant {
+			err = s.store.addMemberRole(ctx, tx, guildID, targetID, roleID)
+		} else {
+			err = s.store.removeMemberRole(ctx, tx, guildID, targetID, roleID)
+		}
+		if err != nil {
+			return err
+		}
+		return s.emitMemberUpdate(ctx, tx, bus.MemberUpdate, guildID, targetID)
+	})
 }
 
 // ---- convites ----
@@ -545,7 +639,15 @@ func (s *Service) Preview(ctx context.Context, code string) (Invite, Guild, erro
 
 // Join entra na guild pelo código. Já ser membro é idempotente e não gasta uso.
 func (s *Service) Join(ctx context.Context, user int64, code string) (Guild, error) {
-	g, _, err := s.store.join(ctx, code, user, s.now())
+	var g Guild
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var joined bool
+		var err error
+		if g, joined, err = s.store.join(ctx, tx, code, user, s.now()); err != nil || !joined {
+			return err
+		}
+		return s.emitMemberUpdate(ctx, tx, bus.MemberJoin, g.ID, user)
+	})
 	switch {
 	case errors.Is(err, errNotFound):
 		return Guild{}, errInvalidInvite

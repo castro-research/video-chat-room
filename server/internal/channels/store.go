@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"kurz/server/internal/permissions"
@@ -32,6 +33,11 @@ type Channel struct {
 }
 
 type store struct{ db *pgxpool.Pool }
+
+// execer é o que pool e transação têm em comum para escrever.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
 const channelCols = `id, guild_id, parent_id, kind, name, position, created_at`
 
@@ -77,20 +83,14 @@ func (s *store) insert(ctx context.Context, q interface {
 		 RETURNING `+channelCols, id, guild, parent, string(kind), name))
 }
 
-func (s *store) delete(ctx context.Context, id int64) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM channels WHERE id = $1`, id)
+func (s *store) delete(ctx context.Context, q execer, id int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM channels WHERE id = $1`, id)
 	return err
 }
 
-// update aplica nome e/ou pai e, se pedido, reordena no grupo de destino, numa transação.
+// update aplica nome e/ou pai e, se pedido, reordena no grupo de destino, na transação do chamador.
 // parentChange: nil = não muda; senão *parentChange (que pode apontar para nil = sem categoria).
-func (s *store) update(ctx context.Context, id int64, name *string, parentChange **int64, position *int) (Channel, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return Channel{}, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
+func (s *store) update(ctx context.Context, tx pgx.Tx, id int64, name *string, parentChange **int64, position *int) (Channel, error) {
 	cur, err := scanChannel(tx.QueryRow(ctx, `SELECT `+channelCols+` FROM channels WHERE id = $1 FOR UPDATE`, id))
 	if err != nil {
 		return Channel{}, err
@@ -142,11 +142,7 @@ func (s *store) update(ctx context.Context, id int64, name *string, parentChange
 			}
 		}
 	}
-	out, err := scanChannel(tx.QueryRow(ctx, `SELECT `+channelCols+` FROM channels WHERE id = $1`, id))
-	if err != nil {
-		return Channel{}, err
-	}
-	return out, tx.Commit(ctx)
+	return scanChannel(tx.QueryRow(ctx, `SELECT `+channelCols+` FROM channels WHERE id = $1`, id))
 }
 
 func sameID(a, b *int64) bool {
@@ -195,16 +191,16 @@ func (s *store) overrides(ctx context.Context, channel int64) ([]permissions.Ove
 	return m[channel], err
 }
 
-func (s *store) setOverride(ctx context.Context, channel int64, o permissions.Override) error {
-	_, err := s.db.Exec(ctx,
+func (s *store) setOverride(ctx context.Context, q execer, channel int64, o permissions.Override) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO channel_overrides (channel_id, target_kind, target_id, allow, deny) VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (channel_id, target_kind, target_id) DO UPDATE SET allow = EXCLUDED.allow, deny = EXCLUDED.deny`,
 		channel, string(o.Kind), o.TargetID, int64(o.Allow), int64(o.Deny))
 	return err
 }
 
-func (s *store) deleteOverride(ctx context.Context, channel int64, kind permissions.TargetKind, target int64) error {
-	_, err := s.db.Exec(ctx,
+func (s *store) deleteOverride(ctx context.Context, q execer, channel int64, kind permissions.TargetKind, target int64) error {
+	_, err := q.Exec(ctx,
 		`DELETE FROM channel_overrides WHERE channel_id = $1 AND target_kind = $2 AND target_id = $3`, channel, string(kind), target)
 	return err
 }
