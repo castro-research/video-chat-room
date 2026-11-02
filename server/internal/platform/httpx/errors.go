@@ -51,3 +51,9 @@ func Wrap(h Handler) http.HandlerFunc {
 		}
 	}
 }
+
+// Erros de autorização compartilhados pelos domínios.
+var (
+	ErrMissingPermission = NewError(http.StatusForbidden, "missing_permission", "you lack the permission for this")
+	ErrHierarchy         = NewError(http.StatusForbidden, "hierarchy", "your highest role is not above the target")
+)
