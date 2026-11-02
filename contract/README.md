@@ -1,7 +1,7 @@
-# Kurz server contract (v0.1, draft)
+# Kurz server contract (v0.2, draft)
 
-What every Kurz server implements, in any language. One server = one community (tenant); the client is given a base URL
-and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
+What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
+global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
 
 `openapi.yaml` is the single source of truth: REST paths, plus the WebSocket frames as schemas (`Gateway*`, `Media*`).
 Per-endpoint rules and error codes are in it. This file has what a schema can't say: the flows.
@@ -11,7 +11,8 @@ Per-endpoint rules and error codes are in it. This file has what a schema can't 
 1. The user types a base URL. The client `GET {base}/.well-known/kurz`, refuses a different `contract` major, hides what
    `capabilities` lacks, and shows the sign-up form according to `registration`.
 2. `POST /v1/auth/register` or `/login` gives a `Session`. Refresh with `/v1/auth/refresh`; on 401 `token_expired` refresh once and retry.
-3. Load the UI: `GET /v1/channels`, `GET /v1/members?role=admin`, `GET /v1/members`, `GET /v1/channels/{id}/messages`.
+3. Load the UI: `GET /v1/guilds`, then for the open guild `GET /v1/guilds/{id}/channels`, `GET /v1/guilds/{id}/members`, `GET /v1/guilds/{id}/roles`,
+   then `GET /v1/channels/{id}/messages`. To join a guild: `GET /v1/invites/{code}` to preview, `POST /v1/invites/{code}/join`.
 4. Open `{base}/v1/gateway` (WebSocket, `ws`/`wss` from the base scheme), send `identify` with the access token, wait for `ready`.
    From then on apply events: `message.create`, `member.update`/`remove`, `voice.state`, `voice.speaking`.
    No resume: after a reconnect, refetch the open channel's messages and the channel list.
@@ -33,9 +34,18 @@ Per-endpoint rules and error codes are in it. This file has what a schema can't 
 
 Servers MUST support Opus for audio and VP8 for video (H.264 optional).
 
-## Left out of 0.1 on purpose
+## Guilds, roles and permissions
 
-- Creating or editing channels, roles and bans: the server owner does it however the implementation allows. Add when a client needs it.
+- Creating a guild makes the caller its owner, with the `@everyone` role (its id is the guild id, position 0) and a text channel `geral`.
+- A member's permissions are the union of `@everyone` and their roles. `administrator` means all; the owner is above every check.
+- A channel can override that per role and member (`allow`/`deny`). Order: @everyone override, then roles, then the member.
+  A channel the member cannot `viewChannel` is hidden: absent from lists and 404 on direct access.
+- Hierarchy: roles have a `position`; you manage a role or member only if your highest role is strictly above theirs.
+  You also cannot grant a permission bit you do not have.
+- Invites are codes with optional expiry and use limit. Banned users get 403 `banned`; spent or expired codes get 410 `invite_expired`.
+
+## Left out of 0.2 on purpose
+
 - Editing and deleting messages, reactions, threads, typing indicators.
 - Federation between servers, and any login other than username and password.
 - Resuming the gateway and simulcast/layer selection: clients refetch; one video layer per publisher.
