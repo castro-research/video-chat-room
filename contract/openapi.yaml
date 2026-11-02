@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Kurz server contract
-  version: 0.2.0
+  version: 0.3.0
   description: |
     The contract every Kurz server implements, whatever language it is written in. One server is a platform: accounts are global, and users create and join many guilds (communities).
     The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
@@ -19,6 +19,7 @@ info:
     - Authorization is checked by the server on every operation. `missing_permission` (403): the caller lacks the permission bit.
       `hierarchy` (403): the target's highest role is not below the caller's. The guild owner skips both.
     - 0.2 describes REST only for guilds; the guild-scoped gateway events arrive with the gateway itself.
+    - 0.3 adds message editing/deleting/replies, reactions and read states over REST. Messages exist only in `text` channels (422 `validation` elsewhere).
     - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
     - 429 carries `Retry-After` (seconds).
     - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
@@ -651,12 +652,23 @@ paths:
     get:
       operationId: listMessages
       tags: [messages]
-      summary: One page of history, oldest to newest
-      description: The page is the newest `limit` messages older than `before` (or the newest overall when `before` is absent).
+      summary: One page of history, always oldest to newest
+      description: |
+        Cursor pagination on message ids, which grow with time. At most one of `before`, `after` and `around`.
+        - none: the newest `limit` messages.
+        - `before`: the newest `limit` messages older than the cursor (cursor excluded).
+        - `after`: the oldest `limit` messages newer than the cursor (cursor excluded).
+        - `around`: about half of `limit` older than the cursor, the rest from the cursor on (cursor included if it still exists).
+        The cursor need not exist anymore (deleted messages).
       parameters:
         - name: before
           in: query
-          description: A message id; only older messages are returned.
+          schema: { type: string }
+        - name: after
+          in: query
+          schema: { type: string }
+        - name: around
+          in: query
           schema: { type: string }
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -666,12 +678,13 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MessagePage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
     post:
       operationId: sendMessage
       tags: [messages]
       summary: Post a message. It is also pushed to everyone (sender included) as `message.create`.
+      description: Needs `sendMessages` in the channel. `replyToId` must be a message of the same channel.
       requestBody:
         required: true
         content:
@@ -689,13 +702,96 @@ paths:
         '422': { $ref: '#/components/responses/Validation' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /v1/channels/{channelId}/messages/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    patch:
+      operationId: editMessage
+      tags: [messages]
+      summary: Edit a message. Only its author can (403 `forbidden` otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditMessageRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: deleteMessage
+      tags: [messages]
+      summary: Delete a message. The author can; anyone else needs `manageMessages` (403 `missing_permission`).
+      description: Deletion is permanent. Its reactions go with it, and replies to it lose `replyToId`.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channels/{channelId}/messages/{messageId}/reactions/{emoji}/@me:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - $ref: '#/components/parameters/Emoji'
+    put:
+      operationId: addReaction
+      tags: [messages]
+      summary: React with an emoji. Idempotent. Needs `sendMessages`.
+      description: A message takes at most 20 different emojis (422 `validation`).
+      responses:
+        '204': { description: Reacted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/channels/{channelId}/messages/{messageId}/reactions/{emoji}/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - $ref: '#/components/parameters/Emoji'
+      - name: userId
+        in: path
+        required: true
+        description: '`@me` removes the caller''s own reaction. Another user''s needs `manageMessages`.'
+        schema: { type: string }
+    delete:
+      operationId: removeReaction
+      tags: [messages]
+      summary: Remove a reaction. Idempotent.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/channels/{channelId}/read:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      operationId: getChannelReadState
+      tags: [messages]
+      summary: The caller's read state in the channel
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
     post:
       operationId: markRead
       tags: [messages]
-      summary: Mark the channel as read up to a message. Resets `unread` for the caller.
-      parameters:
-        - $ref: '#/components/parameters/ChannelId'
+      summary: Mark the channel as read up to a message of that channel. Never moves backwards.
       requestBody:
         required: true
         content:
@@ -703,6 +799,29 @@ paths:
             schema: { $ref: '#/components/schemas/ReadRequest' }
       responses:
         '204': { description: Marked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/read:
+    get:
+      operationId: getGuildReadStates
+      tags: [messages]
+      summary: The caller's read state in every text channel of the guild they can see
+      parameters:
+        - $ref: '#/components/parameters/GuildId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReadState' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -823,6 +942,17 @@ components:
       in: path
       required: true
       schema: { type: string }
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema: { type: string }
+    Emoji:
+      name: emoji
+      in: path
+      required: true
+      description: URL-encoded emoji (or short name). 1-64 bytes, no whitespace or control characters.
+      schema: { type: string }
     Limit:
       name: limit
       in: query
@@ -885,7 +1015,7 @@ components:
           type: string
           pattern: '^[0-9]+\.[0-9]+$'
           description: major.minor of this contract. A client refuses a server whose major differs.
-          example: '0.2'
+          example: '0.3'
         name: { type: string }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
         iconUrl: { type: string, format: uri }
@@ -1175,32 +1305,61 @@ components:
 
     Message:
       type: object
-      required: [id, channelId, author, createdAt, text, attachments]
+      required: [id, channelId, author, createdAt, text, attachments, reactions]
       properties:
         id: { type: string }
         channelId: { type: string }
         author: { $ref: '#/components/schemas/User' }
         createdAt: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time, description: Present once the message was edited. }
         text: { type: string }
+        replyToId: { type: string, description: The message this one answers. Absent when it is not a reply or the original was deleted. }
+        reactions:
+          type: array
+          items: { $ref: '#/components/schemas/Reaction' }
         attachments:
           type: array
           items: { $ref: '#/components/schemas/Attachment' }
         nonce: { type: string, description: "Echo of the sender's nonce, so the sender can match it with its optimistic copy. Only present on the sender's own message." }
 
+    Reaction:
+      type: object
+      required: [emoji, count, me]
+      properties:
+        emoji: { type: string }
+        count: { type: integer, minimum: 1 }
+        me: { type: boolean, description: The caller reacted with this emoji. }
+
     MessagePage:
       type: object
-      required: [items, hasMore]
+      required: [items, hasMore, hasNewer]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/Message' }
         hasMore: { type: boolean, description: There are older messages than the first item. }
+        hasNewer: { type: boolean, description: There are newer messages than the last item. }
+
+    EditMessageRequest:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, minLength: 1, maxLength: 4000 }
+
+    ReadState:
+      type: object
+      required: [channelId, unread]
+      properties:
+        channelId: { type: string }
+        lastReadMessageId: { type: string, description: Absent when the caller never read the channel. }
+        unread: { type: integer, description: 'Messages newer than `lastReadMessageId` by other authors, capped at 1000.' }
 
     SendMessageRequest:
       type: object
       required: [text]
       properties:
-        text: { type: string, maxLength: 4000, description: May be empty only when `attachmentIds` is not. }
+        text: { type: string, maxLength: 4000, description: May be empty only when `attachmentIds` is not (attachments arrive with that capability; until then it is required and non-blank). }
+        replyToId: { type: string }
         nonce: { type: string, maxLength: 64 }
         attachmentIds:
           type: array

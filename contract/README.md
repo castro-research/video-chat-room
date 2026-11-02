@@ -1,4 +1,4 @@
-# Kurz server contract (v0.2, draft)
+# Kurz server contract (v0.3, draft)
 
 What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
 global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
@@ -44,9 +44,9 @@ Servers MUST support Opus for audio and VP8 for video (H.264 optional).
   You also cannot grant a permission bit you do not have.
 - Invites are codes with optional expiry and use limit. Banned users get 403 `banned`; spent or expired codes get 410 `invite_expired`.
 
-## Left out of 0.2 on purpose
+## Left out of 0.3 on purpose
 
-- Editing and deleting messages, reactions, threads, typing indicators.
+- Threads, typing indicators, search and attachments over REST beyond the `Attachment` shape.
 - Federation between servers, and any login other than username and password.
 - Resuming the gateway and simulcast/layer selection: clients refetch; one video layer per publisher.
 
