@@ -123,11 +123,15 @@ func (c *wsClient) quiet() {
 func TestGatewayRESTToWebSocket(t *testing.T) {
 	srv := newRealtimeServer(t)
 	alice, bob := newUser(t, srv.URL, "alice"), newUser(t, srv.URL, "bob")
-	gid := createGuild(alice, "Casa")
-	bob.do("POST", "/v1/invites/"+invite(alice, gid, nil)+"/join", 200, nil)
-	ch := channelNamed(alice, gid, "geral")["id"].(string)
-
+	// conectam antes de a guild existir: os eventos de montagem chegam em ordem e o teste os consome,
+	// sem corrida entre o ready e eventos que já estavam a caminho
 	ca, cb := connect(t, srv, alice), connect(t, srv, bob)
+	gid := createGuild(alice, "Casa")
+	ca.event("guild.create")
+	bob.do("POST", "/v1/invites/"+invite(alice, gid, nil)+"/join", 200, nil)
+	ca.event("member.join")
+	cb.event("member.join")
+	ch := channelNamed(alice, gid, "geral")["id"].(string)
 
 	start := time.Now()
 	m := alice.do("POST", "/v1/channels/"+ch+"/messages", 201, map[string]any{"text": "oi", "nonce": "n-1"})
@@ -167,16 +171,23 @@ func TestGatewayRESTToWebSocket(t *testing.T) {
 func TestGatewayPermissionFilteringE2E(t *testing.T) {
 	srv := newRealtimeServer(t)
 	alice, bob := newUser(t, srv.URL, "alice"), newUser(t, srv.URL, "bob")
+	ca, cb := connect(t, srv, alice), connect(t, srv, bob)
 	gid := createGuild(alice, "Casa")
+	ca.event("guild.create")
 	bob.do("POST", "/v1/invites/"+invite(alice, gid, nil)+"/join", 200, nil)
+	ca.event("member.join")
+	cb.event("member.join")
 	gbase := "/v1/guilds/" + gid
 
+	// cada passo espera o evento dos dois antes da próxima mudança, para o roteamento ver o estado daquele passo
 	secret := alice.do("POST", gbase+"/channels", 201, map[string]any{"name": "secreto", "kind": "text"})["id"].(string)
+	ca.event("channel.create")
+	cb.event("channel.create")
 	ov := "/v1/channels/" + secret + "/overrides/role/" + gid
 	alice.do("PUT", ov, 200, map[string]any{"deny": perm(permissions.ViewChannel)})
+	ca.event("channel.permissions")
+	cb.quiet() // bob acabou de perder a visão do canal
 	geral := channelNamed(alice, gid, "geral")["id"].(string)
-
-	ca, cb := connect(t, srv, alice), connect(t, srv, bob)
 	say := func(ch, text string) {
 		alice.do("POST", "/v1/channels/"+ch+"/messages", 201, map[string]any{"text": text})
 	}

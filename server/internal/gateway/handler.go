@@ -49,11 +49,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sess.detach(c)
-	go c.writeLoop(ctx, g.cfg.WriteTimeout, func() {
-		if ctx.Err() == nil { // se a conexão já caiu, não é cliente lento
-			g.slow(c)
-		}
-	})
+	go c.writeLoop(ctx, g.cfg.WriteTimeout, func() { g.slow(c) })
 	g.readLoop(ctx, c)
 }
 
@@ -210,9 +206,11 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn) {
 }
 
 func (g *Gateway) slow(c *conn) {
-	if c.kill(CloseSlowConsumer, "slow consumer", false) {
+	// conta uma vez por conexão, mesmo que o handler já a tenha encerrado por outro caminho
+	if c.slow.CompareAndSwap(false, true) {
 		g.slowDisconnects.Add(1)
 	}
+	c.kill(CloseSlowConsumer, "slow consumer", false)
 }
 
 func mustJSON(v any) json.RawMessage {

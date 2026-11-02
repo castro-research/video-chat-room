@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,6 +17,7 @@ type conn struct {
 	out  chan []byte
 	done chan struct{}
 	once sync.Once
+	slow atomic.Bool // já contada como cliente lento
 }
 
 func newConn(ws *websocket.Conn, queue int) *conn {
@@ -55,8 +57,8 @@ func (c *conn) kill(code websocket.StatusCode, reason string, graceful bool) (fi
 	return first
 }
 
-// onFail é chamado se a escrita falhar ou estourar o prazo: cliente parado.
-func (c *conn) writeLoop(ctx context.Context, timeout time.Duration, onFail func()) {
+// onSlow é chamado quando uma escrita estoura o prazo: o cliente parou de ler.
+func (c *conn) writeLoop(ctx context.Context, timeout time.Duration, onSlow func()) {
 	for {
 		select {
 		case <-c.done:
@@ -66,9 +68,13 @@ func (c *conn) writeLoop(ctx context.Context, timeout time.Duration, onFail func
 		case b := <-c.out:
 			wctx, cancel := context.WithTimeout(ctx, timeout)
 			err := c.ws.Write(wctx, websocket.MessageText, b)
+			timedOut := wctx.Err() == context.DeadlineExceeded
 			cancel()
 			if err != nil {
-				onFail()
+				if timedOut { // o Write cortou o socket; o handler cancela o ctx logo em seguida, então não dá para olhar o ctx pai
+					onSlow()
+				}
+				c.kill(websocket.StatusGoingAway, "write failed", false)
 				return
 			}
 		}

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Kurz server contract
-  version: 0.3.0
+  version: 0.4.0
   description: |
     The contract every Kurz server implements, whatever language it is written in. One server is a platform: accounts are global, and users create and join many guilds (communities).
     The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
@@ -20,6 +20,7 @@ info:
       `hierarchy` (403): the target's highest role is not below the caller's. The guild owner skips both.
     - 0.2 describes REST only for guilds; the guild-scoped gateway events arrive with the gateway itself.
     - 0.3 adds message editing/deleting/replies, reactions and read states over REST. Messages exist only in `text` channels (422 `validation` elsewhere).
+    - 0.4 specifies the gateway: sequence numbers, resume, permission-filtered events. Frames and events are in `gateway.md`; the `Gateway*` schemas below are the pre-0.4 shapes and are superseded by it where they differ. New capability `realtime`.
     - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
     - 429 carries `Retry-After` (seconds).
     - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
@@ -887,12 +888,12 @@ paths:
       security: []
       summary: WebSocket for realtime events (no token in the URL; the first frame authenticates)
       description: |
-        Upgrade to WebSocket. Frames are JSON `{ "op": string, "d": object }`.
-        Client to server: `GatewayClientMessage`. Server to client: `GatewayServerMessage`.
-        The first client frame must be `identify` within 10 s, else the server closes with 4001.
-        Close 4001 = bad or expired token: refresh the access token and reconnect once.
-        Liveness is WebSocket ping/pong: the server pings at least every 30 s and the client reconnects after 60 s of silence.
-        There is no resume. After reconnecting the client refetches what it missed over REST.
+        Upgrade to WebSocket. Frames are JSON `{ "op": string, "t"?: string, "seq"?: integer, "d"?: object }`.
+        The full protocol (handshake, heartbeat, `seq`, resume, event list, filtering, close codes) is in `gateway.md`.
+        Summary: the server sends `hello`; the client sends `identify` (or `resume`) with the access token within 10 s;
+        the server answers `ready` (session id and the user's guilds) and then `dispatch` frames `{ op, t, seq, d }`
+        with a per-session `seq`. Events are filtered by permission. Close 4001 = bad or expired token.
+        Liveness is the client `heartbeat` op; 2 intervals of silence close with 4010.
       responses:
         '101': { description: Switching Protocols }
 
@@ -1015,7 +1016,7 @@ components:
           type: string
           pattern: '^[0-9]+\.[0-9]+$'
           description: major.minor of this contract. A client refuses a server whose major differs.
-          example: '0.3'
+          example: '0.4'
         name: { type: string }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
         iconUrl: { type: string, format: uri }
@@ -1027,7 +1028,7 @@ components:
           description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses.'
           items:
             type: string
-            enum: [text, voice, video, screenshare, attachments]
+            enum: [text, realtime, voice, video, screenshare, attachments]
 
     User:
       type: object

@@ -1,10 +1,11 @@
-# Kurz server contract (v0.3, draft)
+# Kurz server contract (v0.4, draft)
 
 What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
 global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
 
-`openapi.yaml` is the single source of truth: REST paths, plus the WebSocket frames as schemas (`Gateway*`, `Media*`).
-Per-endpoint rules and error codes are in it. This file has what a schema can't say: the flows.
+`openapi.yaml` is the single source of truth for REST. The realtime gateway protocol (frames, `seq`, resume, events,
+close codes) is specified in [`gateway.md`](gateway.md); the media WebSocket frames are schemas in `openapi.yaml` (`Media*`).
+Per-endpoint rules and error codes are in the OpenAPI file. This file has what a schema can't say: the flows.
 
 ## Connecting
 
@@ -13,9 +14,9 @@ Per-endpoint rules and error codes are in it. This file has what a schema can't 
 2. `POST /v1/auth/register` or `/login` gives a `Session`. Refresh with `/v1/auth/refresh`; on 401 `token_expired` refresh once and retry.
 3. Load the UI: `GET /v1/guilds`, then for the open guild `GET /v1/guilds/{id}/channels`, `GET /v1/guilds/{id}/members`, `GET /v1/guilds/{id}/roles`,
    then `GET /v1/channels/{id}/messages`. To join a guild: `GET /v1/invites/{code}` to preview, `POST /v1/invites/{code}/join`.
-4. Open `{base}/v1/gateway` (WebSocket, `ws`/`wss` from the base scheme), send `identify` with the access token, wait for `ready`.
-   From then on apply events: `message.create`, `member.update`/`remove`, `voice.state`, `voice.speaking`.
-   No resume: after a reconnect, refetch the open channel's messages and the channel list.
+4. If `capabilities` has `realtime`, open `{base}/v1/gateway` (WebSocket, `ws`/`wss` from the base scheme), send `identify` with the
+   access token, wait for `ready`, then load the UI over REST. Apply `dispatch` events idempotently. After a drop, `resume` with the
+   last `seq`; on `invalid_session`, `identify` again and refetch. See `gateway.md`.
 5. Send messages with `POST /v1/channels/{id}/messages`, with a `nonce`. The `message.create` that comes back carries the
    same `nonce`, which is how the sender swaps its optimistic copy for the real one.
 
@@ -44,11 +45,11 @@ Servers MUST support Opus for audio and VP8 for video (H.264 optional).
   You also cannot grant a permission bit you do not have.
 - Invites are codes with optional expiry and use limit. Banned users get 403 `banned`; spent or expired codes get 410 `invite_expired`.
 
-## Left out of 0.3 on purpose
+## Left out of 0.4 on purpose
 
 - Threads, typing indicators, search and attachments over REST beyond the `Attachment` shape.
 - Federation between servers, and any login other than username and password.
-- Resuming the gateway and simulcast/layer selection: clients refetch; one video layer per publisher.
+- Simulcast/layer selection: one video layer per publisher. Voice events, presence and typing on the gateway.
 
 ## Tooling
 

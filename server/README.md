@@ -21,3 +21,8 @@ make test    # testes, incluindo os de integração com Postgres
 | `KURZ_NODE_ID` | `0` | 0 a 1023; deve ser único por réplica (bits do snowflake) |
 | `KURZ_SERVER_NAME` | `Kurz` | |
 | `KURZ_REGISTRATION` | `open` | `open` ou `closed` |
+
+## Tempo real
+
+O processo sobe o relay do outbox e o gateway junto com o HTTP. Escritas gravam o evento em `outbox` na própria transação; o relay
+publica com `NOTIFY` e cada réplica entrega aos WebSockets (`GET /v1/gateway`). Protocolo em `contract/gateway.md`.

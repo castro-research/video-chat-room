@@ -634,6 +634,24 @@ func TestRingBuffer(t *testing.T) {
 	}
 }
 
+// Fila cheia derruba só aquela conexão e nunca bloqueia quem entrega.
+func TestDeliverReportsFullQueueWithoutBlocking(t *testing.T) {
+	s := newSession(1, 8)
+	c := &conn{out: make(chan []byte, 2), done: make(chan struct{})}
+	s.conn = c
+	for i := range 2 {
+		if slow := s.deliver("x", json.RawMessage(`{}`)); slow != nil {
+			t.Fatalf("delivery %d reported slow", i)
+		}
+	}
+	if slow := s.deliver("x", json.RawMessage(`{}`)); slow != c {
+		t.Fatal("full queue must be reported")
+	}
+	if s.seq != 3 { // o evento perdido pela fila continua no buffer para o resume
+		t.Fatalf("seq = %d", s.seq)
+	}
+}
+
 func TestPermCacheTTL(t *testing.T) {
 	c := newPermCache(time.Second)
 	now := time.Now()
