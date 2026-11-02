@@ -1,0 +1,7 @@
+.git
+deploy
+Makefile
+README.md
+compose.yml
+*.md
+**/*_test.go
