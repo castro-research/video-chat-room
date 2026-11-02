@@ -87,7 +87,12 @@ func (f *Fake) Put(key string, data []byte, contentType string) {
 	f.mu.Unlock()
 }
 
-func (f *Fake) Has(key string) bool { f.mu.Lock(); defer f.mu.Unlock(); _, ok := f.objs[key]; return ok }
+func (f *Fake) Has(key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.objs[key]
+	return ok
+}
 
 func (f *Fake) Count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.objs) }
 
