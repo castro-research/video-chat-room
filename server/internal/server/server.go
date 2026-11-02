@@ -3,16 +3,20 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"kurz/server/internal/bus"
 	"kurz/server/internal/channels"
+	"kurz/server/internal/gateway"
 	"kurz/server/internal/guilds"
 	"kurz/server/internal/identity"
 	"kurz/server/internal/messages"
+	"kurz/server/internal/permissions"
 	"kurz/server/internal/platform/config"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
@@ -22,10 +26,30 @@ const (
 	accessTTL  = 15 * time.Minute
 	refreshTTL = 30 * 24 * time.Hour
 	// contractVersion é o major.minor de contract/openapi.yaml que este servidor implementa.
-	contractVersion = "0.3"
+	contractVersion = "0.4"
 )
 
-func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
+// App é o monólito montado: o handler HTTP (inclui o WebSocket do gateway) e os workers de fundo
+// (relay do outbox e gateway), que rodam no mesmo processo.
+type App struct {
+	Handler http.Handler
+	bus     *bus.Postgres
+	gateway *gateway.Gateway
+}
+
+// New devolve só o handler HTTP, sem os workers: serve para testes de REST. O binário usa NewApp.
+func New(cfg config.Config, pool *pgxpool.Pool) http.Handler { return NewApp(cfg, pool).Handler }
+
+// Run roda o relay do outbox e o gateway até ctx terminar. Ao terminar, o gateway fecha as conexões (1001).
+func (a *App) Run(ctx context.Context) {
+	done := make(chan struct{}, 2)
+	go func() { a.bus.Run(ctx); done <- struct{}{} }()
+	go func() { a.gateway.Run(ctx); done <- struct{}{} }()
+	<-done
+	<-done
+}
+
+func NewApp(cfg config.Config, pool *pgxpool.Pool) *App {
 	gen := ids.NewGenerator(cfg.NodeID)
 	tokens := identity.NewTokenIssuer(cfg.JWTSecret, accessTTL)
 	idSvc := identity.NewService(pool, gen, tokens, identity.Config{Registration: cfg.Registration, RefreshTTL: refreshTTL})
@@ -37,6 +61,9 @@ func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
 	chSvc = channels.NewService(pool, gen, guildSvc)
 
 	msgSvc := messages.NewService(pool, gen, channelPerms{chSvc})
+
+	evBus := bus.NewPostgres(pool, gen, bus.Options{})
+	gw := gateway.New(gateway.Config{}, gateway.AuthFunc(tokens.Parse), gatewayDirectory{guilds: guildSvc, channels: chSvc}, evBus)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +78,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
 			"contract":     contractVersion,
 			"name":         cfg.ServerName,
 			"registration": cfg.Registration,
-			"capabilities": []string{"text"},
+			"capabilities": []string{"text", "realtime"},
 		})
 	})
 	idSvc.Mount(mux)
@@ -59,8 +86,36 @@ func New(cfg config.Config, pool *pgxpool.Pool) http.Handler {
 	guildSvc.Mount(mux, auth)
 	chSvc.Mount(mux, auth)
 	msgSvc.Mount(mux, auth)
+	gw.Mount(mux)
 
-	return httpx.AccessLog(httpx.Recover(mux))
+	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw}
+}
+
+// gatewayDirectory adapta guilds e channels à interface Directory do gateway.
+type gatewayDirectory struct {
+	guilds   *guilds.Service
+	channels *channels.Service
+}
+
+func (d gatewayDirectory) Guilds(ctx context.Context, userID int64) ([]gateway.Guild, error) {
+	gs, err := d.guilds.Mine(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]gateway.Guild, len(gs))
+	for i, g := range gs {
+		out[i] = gateway.Guild{ID: g.ID, Name: g.Name, OwnerID: g.OwnerID}
+	}
+	return out, nil
+}
+
+func (d gatewayDirectory) CanView(ctx context.Context, userID, channelID int64) (bool, error) {
+	p, err := d.channels.Permissions(ctx, userID, channelID)
+	var he *httpx.Error
+	if errors.As(err, &he) && he.Status == http.StatusNotFound { // não é membro, ou não vê, ou o canal sumiu
+		return false, nil
+	}
+	return p.Has(permissions.ViewChannel), err
 }
 
 // lazyDefaults adia a resolução do serviço de canais, que só existe depois do de guilds.

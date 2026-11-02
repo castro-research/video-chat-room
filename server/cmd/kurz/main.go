@@ -40,9 +40,14 @@ func run() error {
 	}
 	defer pool.Close()
 
+	app := server.NewApp(cfg, pool)
+	workersCtx, stopWorkers := context.WithCancel(context.Background())
+	workersDone := make(chan struct{})
+	go func() { app.Run(workersCtx); close(workersDone) }()
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(cfg, pool),
+		Handler:           app.Handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -51,16 +56,23 @@ func run() error {
 	go func() { errc <- srv.ListenAndServe() }()
 	slog.Info("listening", "addr", cfg.Addr)
 
+	var serveErr error
 	select {
-	case err := <-errc:
-		return err
+	case serveErr = <-errc:
 	case <-ctx.Done():
 	}
 	stop() // devolve os sinais ao padrão: um segundo Ctrl+C mata o processo durante o drain
+	// 1) os workers param primeiro: o gateway fecha os WebSockets (1001) para o Shutdown não esperar por eles
+	// e o relay termina a transação em curso; 2) o HTTP drena as requisições restantes.
+	stopWorkers()
+	<-workersDone
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
 	}
 	return nil
 }
