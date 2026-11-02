@@ -165,3 +165,47 @@ func TestMessagesMigrationDownAndUp(t *testing.T) {
 		t.Fatal("messages missing after re-up")
 	}
 }
+
+// A 0004 é reversível: desce até a 0003, sobe de novo e o outbox volta.
+func TestOutboxMigrationDownAndUp(t *testing.T) {
+	dbURL := dbtest.EmptyDatabase(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, dbURL); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(table string) bool {
+		var ok bool
+		if err := sqlDB.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1)`, table).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if !has("outbox") {
+		t.Fatal("outbox missing after up")
+	}
+	if _, err := provider.DownTo(ctx, 3); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if has("outbox") {
+		t.Fatal("outbox still exists after down")
+	}
+	if !has("messages") {
+		t.Fatal("down must keep 0003")
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+	if !has("outbox") {
+		t.Fatal("outbox missing after re-up")
+	}
+}
