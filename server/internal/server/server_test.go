@@ -51,7 +51,7 @@ func call(t *testing.T, method, url, token string, body any) (int, map[string]an
 func TestDiscoveryAndHealth(t *testing.T) {
 	srv := newTestServer(t)
 	status, body := call(t, "GET", srv.URL+"/.well-known/kurz", "", nil)
-	if status != 200 || body["name"] != "Teste" || body["registration"] != "open" || body["contract"] != "0.5" {
+	if status != 200 || body["name"] != "Teste" || body["registration"] != "open" || body["contract"] != "0.6" {
 		t.Fatalf("discovery = %d %v", status, body)
 	}
 	if caps, _ := body["capabilities"].([]any); len(caps) != 3 || caps[0] != "text" || caps[1] != "realtime" || caps[2] != "search" {

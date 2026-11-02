@@ -3,7 +3,7 @@ package bus
 // Tipos de evento. O nome é o `t` que o gateway entrega ao cliente.
 //
 // Escopo de entrega no gateway:
-//   - com ChannelID (message.*, reaction.*, channel.create/update/permissions): só quem tem ViewChannel no canal;
+//   - com ChannelID (message.*, reaction.*, voice.state, channel.create/update/permissions): só quem tem ViewChannel no canal;
 //   - sem ChannelID, com GuildID: todos os membros da guild;
 //   - guild.create: só o usuário de payload.userId.
 const (
@@ -29,6 +29,10 @@ const (
 	ChannelUpdate      = "channel.update"
 	ChannelDelete      = "channel.delete"
 	ChannelPermissions = "channel.permissions" // override criado, alterado ou removido
+
+	// VoiceState: alguém entrou/saiu/mudou de canal de voz ou mudou mute/câmera/tela. Tem ChannelID (só quem vê o
+	// canal recebe). Não altera permissões, então não invalida o cache do gateway.
+	VoiceState = "voice.state"
 )
 
 // InvalidatesPermissions diz se o evento pode mudar o que alguém vê: o gateway descarta o cache

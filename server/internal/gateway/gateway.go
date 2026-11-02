@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,17 @@ type Directory interface {
 	Guilds(ctx context.Context, userID int64) ([]Guild, error)
 	// CanView diz se o usuário tem ViewChannel no canal. Canal inexistente ou invisível é (false, nil).
 	CanView(ctx context.Context, userID, channelID int64) (bool, error)
+}
+
+// Voice é a parte de voz que o gateway usa (opcional, ligada com WithVoice): o estado atual no `ready`, o heartbeat
+// que mantém o estado de voz vivo e a op `voice.state.set` do cliente.
+type Voice interface {
+	// Snapshot são os `d` de voice.state (connected=true) das guilds do usuário, só de canais que ele vê.
+	Snapshot(ctx context.Context, userID int64) ([]json.RawMessage, error)
+	// Touch renova o heartbeat do estado de voz do usuário.
+	Touch(ctx context.Context, userID int64)
+	// SetState aplica mute/câmera/tela do próprio usuário.
+	SetState(ctx context.Context, userID int64, muted, camOn, sharing bool) error
 }
 
 // Config ajusta o gateway. Zero usa os padrões.
@@ -75,10 +87,11 @@ func (c *Config) defaults() {
 
 // Gateway mantém as sessões deste processo. Cada réplica tem o seu e escuta o bus sozinha.
 type Gateway struct {
-	cfg  Config
-	auth Authenticator
-	dir  Directory
-	bus  bus.Bus
+	cfg   Config
+	auth  Authenticator
+	dir   Directory
+	bus   bus.Bus
+	voice Voice
 
 	mu       sync.RWMutex
 	sessions map[string]*session
@@ -100,6 +113,9 @@ func New(cfg Config, auth Authenticator, dir Directory, b bus.Bus) *Gateway {
 		cache:  newPermCache(cfg.CacheTTL),
 	}
 }
+
+// WithVoice liga a voz. Chame antes de Run/Mount. Sem ela, o ready não traz `voice` e `voice.state.set` é frame inválido.
+func (g *Gateway) WithVoice(v Voice) *Gateway { g.voice = v; return g }
 
 // Stats são contadores para testes e métricas.
 type Stats struct {

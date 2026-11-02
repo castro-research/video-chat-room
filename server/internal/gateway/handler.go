@@ -50,7 +50,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sess.detach(c)
 	go c.writeLoop(ctx, g.cfg.WriteTimeout, func() { g.slow(c) })
-	g.readLoop(ctx, c)
+	g.readLoop(ctx, c, sess.userID)
 }
 
 func (g *Gateway) fail(c *conn, code websocket.StatusCode, reason string) {
@@ -138,6 +138,19 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 	}
 	frames, _ := s.sinceLocked(0)
 	s.mu.Unlock()
+	if g.voice != nil {
+		vs, err := g.voice.Snapshot(ctx, uid)
+		if err != nil {
+			slog.Error("gateway: load voice state", "user", uid, "err", err)
+			g.drop(s)
+			g.fail(c, websocket.StatusInternalError, "internal error")
+			return nil
+		}
+		if vs == nil {
+			vs = []json.RawMessage{}
+		}
+		data.Voice = mustJSON(vs)
+	}
 	ready, _ := json.Marshal(frame{Op: opReady, D: mustJSON(data)})
 	if _, ok := s.attach(c, ready, frames); !ok {
 		g.drop(s)
@@ -183,7 +196,7 @@ func (g *Gateway) resume(c *conn, uid int64, d resumeData) *session {
 }
 
 // readLoop trata heartbeats. Silêncio por mais de 2 intervalos derruba a conexão (a sessão segue viva para resume).
-func (g *Gateway) readLoop(ctx context.Context, c *conn) {
+func (g *Gateway) readLoop(ctx context.Context, c *conn, uid int64) {
 	ack, _ := json.Marshal(frame{Op: opHeartbeatAck})
 	timer := time.AfterFunc(2*g.cfg.HeartbeatInterval, func() { g.fail(c, CloseHeartbeatTimeout, "heartbeat timeout") })
 	defer timer.Stop()
@@ -194,7 +207,26 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn) {
 		}
 		timer.Reset(2 * g.cfg.HeartbeatInterval)
 		var f frame
-		if json.Unmarshal(data, &f) != nil || f.Op != opHeartbeat {
+		if json.Unmarshal(data, &f) != nil {
+			g.fail(c, CloseBadFrame, "unexpected frame")
+			return
+		}
+		switch {
+		case f.Op == opHeartbeat:
+			if g.voice != nil {
+				g.voice.Touch(ctx, uid)
+			}
+		case f.Op == opVoiceStateSet && g.voice != nil:
+			var d voiceStateSetData
+			if json.Unmarshal(f.D, &d) != nil {
+				g.fail(c, CloseBadFrame, "invalid voice.state.set")
+				return
+			}
+			if err := g.voice.SetState(ctx, uid, d.Muted, d.CamOn, d.Sharing); err != nil && ctx.Err() == nil {
+				slog.Error("gateway: voice.state.set", "user", uid, "err", err)
+			}
+			continue // sem ack: o resultado chega como voice.state
+		default:
 			g.fail(c, CloseBadFrame, "unexpected frame")
 			return
 		}

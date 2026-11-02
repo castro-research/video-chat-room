@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -23,13 +24,14 @@ import (
 	"kurz/server/internal/platform/ids"
 	"kurz/server/internal/platform/objstore"
 	"kurz/server/internal/search"
+	"kurz/server/internal/voice"
 )
 
 const (
 	accessTTL  = 15 * time.Minute
 	refreshTTL = 30 * 24 * time.Hour
 	// contractVersion é o major.minor de contract/openapi.yaml que este servidor implementa.
-	contractVersion = "0.5"
+	contractVersion = "0.6"
 )
 
 // App é o monólito montado: o handler HTTP (inclui o WebSocket do gateway) e os workers de fundo
@@ -39,6 +41,7 @@ type App struct {
 	bus     *bus.Postgres
 	gateway *gateway.Gateway
 	jobs    *jobs.Worker
+	voice   *voice.Service
 }
 
 // Option ajusta a montagem do App.
@@ -47,7 +50,11 @@ type Option func(*options)
 type options struct {
 	store objstore.Store
 	jobs  jobs.Options
+	voice func(*voice.Config) // ajuste da config de voz (testes)
 }
+
+// WithVoiceConfig ajusta a configuração de voz depois de lida do config (testes: TTL, relógio, ICE).
+func WithVoiceConfig(fn func(*voice.Config)) Option { return func(o *options) { o.voice = fn } }
 
 // WithObjectStore liga os anexos. Sem ele, os endpoints de anexo respondem 501 e a capability `attachments` não é anunciada.
 func WithObjectStore(s objstore.Store) Option { return func(o *options) { o.store = s } }
@@ -66,10 +73,17 @@ func (a *App) RunJobsOnce(ctx context.Context) (int, error) { return a.jobs.RunO
 // Run roda o relay do outbox, o gateway e o worker de jobs até ctx terminar. Ao terminar, o gateway fecha as
 // conexões (1001) e o worker espera os jobs em curso.
 func (a *App) Run(ctx context.Context) {
-	done := make(chan struct{}, 3)
+	done := make(chan struct{}, 4)
 	go func() { a.bus.Run(ctx); done <- struct{}{} }()
 	go func() { a.gateway.Run(ctx); done <- struct{}{} }()
 	go func() { a.jobs.Run(ctx); done <- struct{}{} }()
+	go func() {
+		if a.voice.Enabled() {
+			a.voice.Run(ctx, a.bus)
+		}
+		done <- struct{}{}
+	}()
+	<-done
 	<-done
 	<-done
 	<-done
@@ -98,8 +112,21 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	worker := jobs.NewWorker(pool, gen, o.jobs)
 	msgSvc.RegisterJobs(worker)
 
+	vcfg := voice.Config{Secret: cfg.Voice.Secret, SFUURL: cfg.Voice.SFUURL}
+	for _, s := range cfg.Voice.ICEServers {
+		vcfg.ICEServers = append(vcfg.ICEServers, voice.ICEServer{URLs: s.URLs, Username: s.Username, Credential: s.Credential})
+	}
+	if o.voice != nil {
+		o.voice(&vcfg)
+	}
+	voiceSvc := voice.NewService(pool, gen, voiceChannels{chSvc}, vcfg)
+	voiceSvc.RegisterJobs(worker)
+
 	evBus := bus.NewPostgres(pool, gen, bus.Options{})
 	gw := gateway.New(gateway.Config{}, gateway.AuthFunc(tokens.Parse), gatewayDirectory{guilds: guildSvc, channels: chSvc}, evBus)
+	if voiceSvc.Enabled() {
+		gw.WithVoice(gatewayVoice{voiceSvc})
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +140,9 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	caps := []string{"text", "realtime", "search"}
 	if msgSvc.HasStorage() {
 		caps = append(caps, "attachments")
+	}
+	if voiceSvc.Enabled() {
+		caps = append(caps, "voice")
 	}
 	mux.HandleFunc("GET /.well-known/kurz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -128,9 +158,10 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	chSvc.Mount(mux, auth)
 	msgSvc.Mount(mux, auth)
 	searchSvc.Mount(mux, auth)
+	voiceSvc.Mount(mux, auth)
 	gw.Mount(mux)
 
-	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw, jobs: worker}
+	return &App{Handler: httpx.AccessLog(httpx.Recover(mux)), bus: evBus, gateway: gw, jobs: worker, voice: voiceSvc}
 }
 
 // gatewayDirectory adapta guilds e channels à interface Directory do gateway.
@@ -190,4 +221,27 @@ func (c channelPerms) VisibleTextChannels(ctx context.Context, userID, guildID i
 		}
 	}
 	return out, nil
+}
+
+// voiceChannels adapta channels.Service à interface Channels do módulo de voz.
+type voiceChannels struct{ ch *channels.Service }
+
+func (v voiceChannels) VoiceAccess(ctx context.Context, userID, channelID int64) (voice.Channel, error) {
+	ch, p, err := v.ch.Access(ctx, userID, channelID)
+	if err != nil {
+		return voice.Channel{}, err
+	}
+	return voice.Channel{ID: ch.ID, GuildID: ch.GuildID, Voice: ch.Kind == channels.KindVoice,
+		Connect: p.Has(permissions.Connect), Speak: p.Has(permissions.Speak)}, nil
+}
+
+// gatewayVoice adapta voice.Service à interface Voice do gateway.
+type gatewayVoice struct{ v *voice.Service }
+
+func (g gatewayVoice) Snapshot(ctx context.Context, userID int64) ([]json.RawMessage, error) {
+	return g.v.Snapshot(ctx, userID)
+}
+func (g gatewayVoice) Touch(ctx context.Context, userID int64) { g.v.Touch(ctx, userID) }
+func (g gatewayVoice) SetState(ctx context.Context, userID int64, muted, camOn, sharing bool) error {
+	return g.v.SetState(ctx, userID, muted, camOn, sharing)
 }

@@ -2,7 +2,9 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"strconv"
 
 	"kurz/server/internal/platform/ids"
@@ -16,7 +18,24 @@ type Config struct {
 	ServerName   string
 	Registration string // "open" ou "closed"
 	S3           S3
+	Voice        Voice
 }
+
+// Voice configura a voz. É opcional: sem Secret e SFUURL ela fica desligada (Enabled() == false), os endpoints de voz
+// respondem 501 e a capability `voice` não é anunciada. Os dois precisam vir juntos.
+type Voice struct {
+	Secret     []byte      // KURZ_SECRET: o mesmo segredo do SFU (HS256 do token de mídia)
+	SFUURL     string      // KURZ_SFU_URL: ws:// ou wss:// do /v1/media do SFU, como o CLIENTE alcança
+	ICEServers []ICEServer // KURZ_ICE_SERVERS: JSON [{"urls":[...],"username":"","credential":""}]; padrão: STUN do Google
+}
+
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
+}
+
+func (v Voice) Enabled() bool { return len(v.Secret) > 0 && v.SFUURL != "" }
 
 // S3 configura o armazenamento de anexos. É opcional: sem Endpoint o storage fica desligado
 // (Enabled() == false) e os endpoints de anexo respondem 501. Os demais campos têm padrões de dev (MinIO do compose).
@@ -64,7 +83,38 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.Registration != "open" && c.Registration != "closed" {
 		return Config{}, fmt.Errorf("KURZ_REGISTRATION must be open or closed")
 	}
+	if err := loadVoice(&c, getenv); err != nil {
+		return Config{}, err
+	}
 	return c, nil
+}
+
+func loadVoice(c *Config, getenv func(string) string) error {
+	secret, url, ice := getenv("KURZ_SECRET"), getenv("KURZ_SFU_URL"), getenv("KURZ_ICE_SERVERS")
+	if secret == "" && url == "" {
+		return nil // voz desligada
+	}
+	if secret == "" || url == "" {
+		return fmt.Errorf("KURZ_SECRET and KURZ_SFU_URL must be set together")
+	}
+	if len(secret) < 16 {
+		return fmt.Errorf("KURZ_SECRET must have at least 16 bytes")
+	}
+	if u, err := neturl.Parse(url); err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+		return fmt.Errorf("KURZ_SFU_URL must be a ws:// or wss:// URL")
+	}
+	c.Voice = Voice{Secret: []byte(secret), SFUURL: url}
+	if ice != "" {
+		if err := json.Unmarshal([]byte(ice), &c.Voice.ICEServers); err != nil {
+			return fmt.Errorf("KURZ_ICE_SERVERS is not valid JSON: %w", err)
+		}
+		for _, s := range c.Voice.ICEServers {
+			if len(s.URLs) == 0 {
+				return fmt.Errorf("KURZ_ICE_SERVERS: every server needs urls")
+			}
+		}
+	}
+	return nil
 }
 
 func or(v, fallback string) string {

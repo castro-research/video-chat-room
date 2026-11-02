@@ -13,6 +13,7 @@ const (
 	opHeartbeat      = "heartbeat"       // cliente
 	opHeartbeatAck   = "heartbeat_ack"   // servidor
 	opDispatch       = "dispatch"        // servidor: evento com t e seq
+	opVoiceStateSet  = "voice.state.set" // cliente: mute, câmera e tela do próprio usuário (só com voz ligada)
 )
 
 // Códigos de fechamento (faixa 4000-4999 é da aplicação).
@@ -61,4 +62,12 @@ type readyData struct {
 	User              userData    `json:"user"`
 	Guilds            []guildData `json:"guilds"`
 	HeartbeatInterval int64       `json:"heartbeatInterval"`
+	// Voice é o estado de voz atual (cada item é o `d` de um voice.state). Só aparece com voz ligada.
+	Voice json.RawMessage `json:"voice,omitempty"`
+}
+
+type voiceStateSetData struct {
+	Muted   bool `json:"muted"`
+	CamOn   bool `json:"camOn"`
+	Sharing bool `json:"sharing"`
 }
