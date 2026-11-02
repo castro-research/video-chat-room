@@ -116,3 +116,52 @@ func TestGuildsMigrationDownAndUp(t *testing.T) {
 		t.Fatal("guilds missing after re-up")
 	}
 }
+
+// A 0003 é reversível: desce até a 0002, sobe de novo e as tabelas voltam.
+func TestMessagesMigrationDownAndUp(t *testing.T) {
+	dbURL := dbtest.EmptyDatabase(t)
+	ctx := context.Background()
+	if err := db.Migrate(ctx, dbURL); err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrations.FS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(table string) bool {
+		var ok bool
+		if err := sqlDB.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1)`, table).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	tables := []string{"messages", "reactions", "read_states"}
+	for _, tb := range tables {
+		if !has(tb) {
+			t.Fatalf("%s missing after up", tb)
+		}
+	}
+	if _, err := provider.DownTo(ctx, 2); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	for _, tb := range tables {
+		if has(tb) {
+			t.Fatalf("%s still exists after down", tb)
+		}
+	}
+	if !has("channels") {
+		t.Fatal("down must keep 0002")
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+	if !has("messages") {
+		t.Fatal("messages missing after re-up")
+	}
+}
