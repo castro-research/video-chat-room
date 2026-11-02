@@ -62,3 +62,16 @@ func TestLoadErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadS3(t *testing.T) {
+	c, err := Load(env(valid()))
+	if err != nil || c.S3.Enabled() || c.S3.Bucket != "kurz" || c.S3.Region != "us-east-1" || c.S3.AccessKey == "" {
+		t.Fatalf("s3 off by default: %+v %v", c.S3, err)
+	}
+	m := valid()
+	m["KURZ_S3_ENDPOINT"], m["KURZ_S3_BUCKET"], m["KURZ_S3_PUBLIC_ENDPOINT"] = "localhost:9000", "b", "http://cdn.example"
+	c, err = Load(env(m))
+	if err != nil || !c.S3.Enabled() || c.S3.Bucket != "b" || c.S3.PublicEndpoint != "http://cdn.example" {
+		t.Fatalf("s3 on: %+v %v", c.S3, err)
+	}
+}

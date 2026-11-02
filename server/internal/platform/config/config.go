@@ -15,7 +15,21 @@ type Config struct {
 	NodeID       int64
 	ServerName   string
 	Registration string // "open" ou "closed"
+	S3           S3
 }
+
+// S3 configura o armazenamento de anexos. É opcional: sem Endpoint o storage fica desligado
+// (Enabled() == false) e os endpoints de anexo respondem 501. Os demais campos têm padrões de dev (MinIO do compose).
+type S3 struct {
+	Endpoint       string // host:port ou URL (http://host:port); vazio desliga o storage
+	PublicEndpoint string // endereço que o CLIENTE alcança, usado nas URLs pré-assinadas; padrão: Endpoint
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+	Region         string
+}
+
+func (s S3) Enabled() bool { return s.Endpoint != "" }
 
 // Load recebe os.Getenv (ou um fake nos testes).
 func Load(getenv func(string) string) (Config, error) {
@@ -25,6 +39,14 @@ func Load(getenv func(string) string) (Config, error) {
 		JWTSecret:    []byte(getenv("KURZ_JWT_SECRET")),
 		ServerName:   or(getenv("KURZ_SERVER_NAME"), "Kurz"),
 		Registration: or(getenv("KURZ_REGISTRATION"), "open"),
+	}
+	c.S3 = S3{
+		Endpoint:       getenv("KURZ_S3_ENDPOINT"),
+		PublicEndpoint: getenv("KURZ_S3_PUBLIC_ENDPOINT"),
+		Bucket:         or(getenv("KURZ_S3_BUCKET"), "kurz"),
+		AccessKey:      or(getenv("KURZ_S3_ACCESS_KEY"), "kurzdev"),
+		SecretKey:      or(getenv("KURZ_S3_SECRET_KEY"), "kurzdev-secret"),
+		Region:         or(getenv("KURZ_S3_REGION"), "us-east-1"),
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("KURZ_DATABASE_URL is required")
