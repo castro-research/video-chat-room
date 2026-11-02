@@ -72,7 +72,7 @@ func (o Options) withDefaults() Options {
 }
 
 func defaultBackoff(attempt int) time.Duration {
-	d := time.Second << min(attempt-1, 10)
+	d := time.Second << min(max(attempt-1, 0), 10)
 	return min(d, 10*time.Minute)
 }
 
@@ -133,7 +133,10 @@ func (w *Worker) claim(ctx context.Context) (*claimed, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return &c, err
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (w *Worker) finish(ctx context.Context, c *claimed, runErr error) error {

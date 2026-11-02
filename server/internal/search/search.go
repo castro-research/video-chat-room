@@ -98,6 +98,31 @@ func (s *Service) Search(ctx context.Context, user, guild int64, q Query) (Page,
 		return Page{}, nil
 	}
 
+	sql, args := buildSQL(q, chans)
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return Page{}, err
+	}
+	defer rows.Close()
+	var p Page
+	for rows.Next() {
+		var r Result
+		if err := rows.Scan(&r.ID, &r.ChannelID, &r.CreatedAt, &r.Text, &r.Author.ID, &r.Author.Username, &r.Author.Name, &r.Highlight); err != nil {
+			return Page{}, err
+		}
+		p.Items = append(p.Items, r)
+	}
+	if err := rows.Err(); err != nil {
+		return Page{}, err
+	}
+	if len(p.Items) > q.Limit {
+		p.Items = p.Items[:q.Limit]
+		p.NextCursor = p.Items[q.Limit-1].ID
+	}
+	return p, nil
+}
+
+func buildSQL(q Query, chans []int64) (string, []any) {
 	args := []any{chans, q.Text}
 	where := `m.channel_id = ANY($1) AND m.search @@ websearch_to_tsquery('portuguese'::regconfig, $2)`
 	if q.AuthorID != 0 {
@@ -126,25 +151,5 @@ func (s *Service) Search(ctx context.Context, user, guild int64, q Query) (Page,
 		SELECT h.id, h.channel_id, h.created_at, h.content, u.id, u.username, u.name, %s
 		FROM hits h JOIN users u ON u.id = h.author_id
 		ORDER BY h.id DESC`, where, limitArg, hl)
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return Page{}, err
-	}
-	defer rows.Close()
-	var p Page
-	for rows.Next() {
-		var r Result
-		if err := rows.Scan(&r.ID, &r.ChannelID, &r.CreatedAt, &r.Text, &r.Author.ID, &r.Author.Username, &r.Author.Name, &r.Highlight); err != nil {
-			return Page{}, err
-		}
-		p.Items = append(p.Items, r)
-	}
-	if err := rows.Err(); err != nil {
-		return Page{}, err
-	}
-	if len(p.Items) > q.Limit {
-		p.Items = p.Items[:q.Limit]
-		p.NextCursor = p.Items[q.Limit-1].ID
-	}
-	return p, nil
+	return sql, args
 }

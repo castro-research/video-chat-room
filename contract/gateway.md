@@ -1,4 +1,4 @@
-# Kurz gateway (contract 0.4)
+# Kurz gateway (contract 0.5)
 
 Realtime channel: `GET {base}/v1/gateway`, upgraded to a WebSocket (`ws`/`wss` from the base scheme). The server advertises it
 as the `realtime` capability in `/.well-known/kurz`. Every frame is a JSON text message:
@@ -60,7 +60,7 @@ Events are filtered by the server, per user, at delivery time:
 
 | `t` | `d` |
 |---|---|
-| `message.create` | `Message` (as in REST). `nonce` is present only for the sender, so it can replace its optimistic copy |
+| `message.create` | `Message` (as in REST, including `attachments` with pre-signed download URLs that expire in 1 hour). `nonce` is present only for the sender, so it can replace its optimistic copy |
 | `message.update` | `{ id, channelId, text, editedAt }` |
 | `message.delete` | `{ id, channelId }` |
 | `reaction.add` / `reaction.remove` | `{ channelId, messageId, userId, emoji }` |

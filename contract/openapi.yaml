@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Kurz server contract
-  version: 0.4.0
+  version: 0.5.0
   description: |
     The contract every Kurz server implements, whatever language it is written in. One server is a platform: accounts are global, and users create and join many guilds (communities).
     The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
@@ -21,6 +21,7 @@ info:
     - 0.2 describes REST only for guilds; the guild-scoped gateway events arrive with the gateway itself.
     - 0.3 adds message editing/deleting/replies, reactions and read states over REST. Messages exist only in `text` channels (422 `validation` elsewhere).
     - 0.4 specifies the gateway: sequence numbers, resume, permission-filtered events. Frames and events are in `gateway.md`; the `Gateway*` schemas below are the pre-0.4 shapes and are superseded by it where they differ. New capability `realtime`.
+    - 0.5 adds attachments (direct upload to object storage with pre-signed URLs) and full-text search. `Message.attachments` carries pre-signed GET URLs that expire. New capabilities `search` and `attachments`.
     - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
     - 429 carries `Retry-After` (seconds).
     - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
@@ -685,7 +686,7 @@ paths:
       operationId: sendMessage
       tags: [messages]
       summary: Post a message. It is also pushed to everyone (sender included) as `message.create`.
-      description: Needs `sendMessages` in the channel. `replyToId` must be a message of the same channel.
+      description: Needs `sendMessages` in the channel. `replyToId` must be a message of the same channel. `attachmentIds` links uploaded files to the message in the same transaction; the response and the `message.create` event carry them with fresh download URLs.
       requestBody:
         required: true
         content:
@@ -826,30 +827,68 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /v1/uploads:
+  /v1/channels/{channelId}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
     post:
-      operationId: upload
+      operationId: requestUpload
       tags: [messages]
-      summary: Upload a file to attach to a message (capability `attachments`)
-      description: The returned id goes in `SendMessageRequest.attachmentIds`. Servers may discard uploads never attached.
+      summary: Ask to upload a file to attach to a message (capability `attachments`)
+      description: |
+        The bytes never go through the API. Flow: 1) this call validates name, type and size and answers with an `uploadUrl`;
+        2) the client sends the file with `PUT {uploadUrl}` (body = the raw bytes, exactly `size` of them) before `expiresAt`;
+        3) the client posts the message with `attachmentIds`. The server then checks that the object exists with the declared size.
+        Needs `sendMessages` in the channel. Allowed types: image/png, image/jpeg, image/gif, image/webp, video/mp4, video/webm,
+        audio/mpeg, audio/ogg, audio/wav, audio/webm, application/pdf, text/plain, application/zip (parameters such as `charset` are ignored).
+        Maximum size: 26214400 bytes (25 MiB). A message takes at most 10 attachments.
+        An upload never attached to a message is discarded by the server after about an hour.
+        An attachment belongs to the channel and the user that requested it.
       requestBody:
         required: true
         content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [file]
-              properties:
-                file: { type: string, format: binary }
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadRequest' }
       responses:
         '201':
           description: Created
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Attachment' }
+              schema: { $ref: '#/components/schemas/UploadTicket' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Validation' }
-        '501': { description: not_supported }
+        '501': { description: 'not_supported: the server has no object storage (no `attachments` capability).' }
+
+  /v1/guilds/{guildId}/search:
+    get:
+      operationId: searchMessages
+      tags: [messages]
+      summary: Full-text search over the messages of a guild (capability `search`)
+      description: |
+        Searches only text channels the caller can see (`viewChannel`); messages of hidden channels never show up.
+        `q` uses web-search syntax: words are ANDed, `"a phrase"`, `or`, and `-word` to exclude. Matching is by stem in Portuguese
+        (stop words are ignored; a query made only of stop words matches nothing).
+        Results are newest first and paginated by cursor: pass the previous page's `nextCursor` as `cursor`; there is no
+        `nextCursor` on the last page. Naming a channel the caller cannot see (or that is not a text channel of this guild) is 404.
+        Edited messages are searched by their current text; deleted ones disappear.
+      parameters:
+        - $ref: '#/components/parameters/GuildId'
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - { name: channelId, in: query, schema: { type: string }, description: Only this channel. }
+        - { name: authorId, in: query, schema: { type: string }, description: Only messages by this user. }
+        - { name: highlight, in: query, schema: { type: boolean, default: false }, description: 'Fill `highlight` with an excerpt in which matches are wrapped in U+27E6 and U+27E7.' }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
 
   /v1/channels/{channelId}/voice/join:
     post:
@@ -1016,7 +1055,7 @@ components:
           type: string
           pattern: '^[0-9]+\.[0-9]+$'
           description: major.minor of this contract. A client refuses a server whose major differs.
-          example: '0.4'
+          example: '0.5'
         name: { type: string }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
         iconUrl: { type: string, format: uri }
@@ -1025,10 +1064,10 @@ components:
           enum: [open, invite, closed]
         capabilities:
           type: array
-          description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses.'
+          description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses. `attachments` is advertised only when the server has object storage; `search` needs nothing but the database.'
           items:
             type: string
-            enum: [text, realtime, voice, video, screenshare, attachments]
+            enum: [text, realtime, search, voice, video, screenshare, attachments]
 
     User:
       type: object
@@ -1297,12 +1336,58 @@ components:
       required: [id, url, contentType]
       properties:
         id: { type: string }
-        url: { type: string, format: uri }
+        url: { type: string, format: uri, description: 'Pre-signed GET. It expires (1 hour): refetch the message for a fresh one. Not for hot-linking or long-term storage.' }
         contentType: { type: string }
-        name: { type: string }
-        size: { type: integer }
-        width: { type: integer, description: 'Pixels, for images and video.' }
+        name: { type: string, description: Original file name. }
+        size: { type: integer, description: Bytes. }
+        width: { type: integer, description: 'Pixels, for images and video. The server does not fill it yet.' }
         height: { type: integer }
+
+    UploadRequest:
+      type: object
+      required: [filename, contentType, size]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255, description: 'No path separators or control characters.' }
+        contentType: { type: string, example: image/png }
+        size: { type: integer, minimum: 1, maximum: 26214400 }
+
+    UploadTicket:
+      type: object
+      required: [id, uploadUrl, method, expiresAt]
+      properties:
+        id: { type: string, description: Goes in `SendMessageRequest.attachmentIds`. }
+        uploadUrl: { type: string, format: uri, description: Pre-signed URL; send the file bytes to it. }
+        method: { type: string, enum: [PUT] }
+        expiresAt: { type: string, format: date-time, description: 'About 15 minutes ahead. After that, request a new upload.' }
+        name: { type: string }
+        contentType: { type: string, description: The normalized type. }
+        size: { type: integer }
+
+    SearchResult:
+      type: object
+      required: [id, channelId, author, createdAt, text]
+      properties:
+        id: { type: string, description: The message id. }
+        channelId: { type: string }
+        author:
+          type: object
+          required: [id, username, name]
+          properties:
+            id: { type: string }
+            username: { type: string }
+            name: { type: string }
+        createdAt: { type: string, format: date-time }
+        text: { type: string }
+        highlight: { type: string, description: 'Only with `highlight=true`. Plain text (not HTML) with matches between U+27E6 and U+27E7.' }
+
+    SearchPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SearchResult' }
+        nextCursor: { type: string, description: Absent on the last page. }
 
     Message:
       type: object
@@ -1357,14 +1442,15 @@ components:
 
     SendMessageRequest:
       type: object
-      required: [text]
       properties:
-        text: { type: string, maxLength: 4000, description: May be empty only when `attachmentIds` is not (attachments arrive with that capability; until then it is required and non-blank). }
+        text: { type: string, maxLength: 4000, description: 'May be empty or omitted only when `attachmentIds` is not empty; otherwise it is required and non-blank.' }
         replyToId: { type: string }
         nonce: { type: string, maxLength: 64 }
         attachmentIds:
           type: array
+          maxItems: 10
           items: { type: string }
+          description: 'Uploads from `requestUpload` that were already sent. They must be pending, requested by the caller for this channel, and their object must exist with the declared size, else 422. 501 without the `attachments` capability.'
 
     ReadRequest:
       type: object

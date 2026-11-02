@@ -1,4 +1,4 @@
-# Kurz server contract (v0.4, draft)
+# Kurz server contract (v0.5, draft)
 
 What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
 global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
@@ -45,9 +45,17 @@ Servers MUST support Opus for audio and VP8 for video (H.264 optional).
   You also cannot grant a permission bit you do not have.
 - Invites are codes with optional expiry and use limit. Banned users get 403 `banned`; spent or expired codes get 410 `invite_expired`.
 
-## Left out of 0.4 on purpose
+## Attachments and search (0.5)
 
-- Threads, typing indicators, search and attachments over REST beyond the `Attachment` shape.
+- Attachments (capability `attachments`, only when the server has object storage): `POST /v1/channels/{id}/attachments` with name, type and size
+  returns an `uploadUrl`; `PUT` the bytes to it directly; then `POST .../messages` with `attachmentIds` (text may be empty).
+  `Message.attachments[].url` is a pre-signed GET that expires after 1 hour: refetch the message when it does. A server without
+  object storage answers 501 `not_supported`.
+- Search (capability `search`): `GET /v1/guilds/{id}/search?q=...`, newest first, cursor-paginated, limited to channels the caller can see.
+
+## Left out of 0.5 on purpose
+
+- Threads, typing indicators, search ranking by relevance and image dimensions on attachments.
 - Federation between servers, and any login other than username and password.
 - Simulcast/layer selection: one video layer per publisher. Voice events, presence and typing on the gateway.
 
