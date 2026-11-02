@@ -6,6 +6,7 @@ import (
 	"fmt"
 	neturl "net/url"
 	"strconv"
+	"strings"
 
 	"kurz/server/internal/platform/ids"
 )
@@ -19,6 +20,19 @@ type Config struct {
 	Registration string // "open" ou "closed"
 	S3           S3
 	Voice        Voice
+	RateLimit    RateLimit
+	TrustedProxy bool   // KURZ_TRUSTED_PROXY: confia no X-Forwarded-For (só atrás de um proxy que o sobrescreve)
+	OtelEndpoint string // KURZ_OTEL_ENDPOINT: URL OTLP/HTTP do coletor (ex.: http://otel:4318); vazio desliga os traces
+}
+
+// RateLimit configura os token buckets (RNF10). O valor zero é "desligado"; Load liga com os padrões.
+// Os limites são por réplica, em memória: com N réplicas o limite efetivo de um cliente é até N vezes maior.
+type RateLimit struct {
+	Enabled     bool    // KURZ_RATELIMIT=off desliga (loadtest)
+	AuthBurst   float64 // KURZ_RATELIMIT_AUTH_BURST: rajada por IP nos endpoints de auth (padrão 20)
+	AuthPerMin  float64 // KURZ_RATELIMIT_AUTH_PER_MIN: reposição por IP, tokens/minuto (padrão 20)
+	WriteBurst  float64 // KURZ_RATELIMIT_WRITE_BURST: rajada por usuário nas escritas (padrão 60)
+	WritePerSec float64 // KURZ_RATELIMIT_WRITE_PER_SEC: reposição por usuário, tokens/s (padrão 20)
 }
 
 // Voice configura a voz. É opcional: sem Secret e SFUURL ela fica desligada (Enabled() == false), os endpoints de voz
@@ -73,7 +87,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(c.JWTSecret) < 32 {
 		return Config{}, fmt.Errorf("KURZ_JWT_SECRET must have at least 32 bytes")
 	}
-	if v := getenv("KURZ_NODE_ID"); v != "" {
+	if getenv("KURZ_NODE_ID_FROM_HOSTNAME") == "true" {
+		// StatefulSet: o hostname é <nome>-<ordinal>, estável por réplica e único no conjunto.
+		n, err := NodeIDFromHostname(getenv("HOSTNAME"))
+		if err != nil {
+			return Config{}, err
+		}
+		if n > ids.MaxNode {
+			return Config{}, fmt.Errorf("hostname ordinal %d exceeds the max node id %d", n, ids.MaxNode)
+		}
+		c.NodeID = n
+	} else if v := getenv("KURZ_NODE_ID"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 || n > ids.MaxNode {
 			return Config{}, fmt.Errorf("KURZ_NODE_ID must be an integer in [0, %d]", ids.MaxNode)
@@ -83,10 +107,56 @@ func Load(getenv func(string) string) (Config, error) {
 	if c.Registration != "open" && c.Registration != "closed" {
 		return Config{}, fmt.Errorf("KURZ_REGISTRATION must be open or closed")
 	}
+	c.TrustedProxy = getenv("KURZ_TRUSTED_PROXY") == "true"
+	c.OtelEndpoint = getenv("KURZ_OTEL_ENDPOINT")
+	if err := loadRateLimit(&c, getenv); err != nil {
+		return Config{}, err
+	}
 	if err := loadVoice(&c, getenv); err != nil {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// NodeIDFromHostname extrai o sufixo numérico de "kurz-3" (o ordinal de um pod de StatefulSet).
+func NodeIDFromHostname(host string) (int64, error) {
+	i := strings.LastIndexByte(host, '-')
+	if i < 0 || i == len(host)-1 {
+		return 0, fmt.Errorf("KURZ_NODE_ID_FROM_HOSTNAME: hostname %q has no numeric suffix", host)
+	}
+	n, err := strconv.ParseInt(host[i+1:], 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("KURZ_NODE_ID_FROM_HOSTNAME: hostname %q has no numeric suffix", host)
+	}
+	return n, nil
+}
+
+func loadRateLimit(c *Config, getenv func(string) string) error {
+	rl := RateLimit{Enabled: true, AuthBurst: 20, AuthPerMin: 20, WriteBurst: 60, WritePerSec: 20}
+	switch getenv("KURZ_RATELIMIT") {
+	case "", "on":
+	case "off":
+		rl.Enabled = false
+	default:
+		return fmt.Errorf("KURZ_RATELIMIT must be on or off")
+	}
+	for _, f := range []struct {
+		env string
+		dst *float64
+	}{
+		{"KURZ_RATELIMIT_AUTH_BURST", &rl.AuthBurst}, {"KURZ_RATELIMIT_AUTH_PER_MIN", &rl.AuthPerMin},
+		{"KURZ_RATELIMIT_WRITE_BURST", &rl.WriteBurst}, {"KURZ_RATELIMIT_WRITE_PER_SEC", &rl.WritePerSec},
+	} {
+		if v := getenv(f.env); v != "" {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil || n <= 0 {
+				return fmt.Errorf("%s must be a positive number", f.env)
+			}
+			*f.dst = n
+		}
+	}
+	c.RateLimit = rl
+	return nil
 }
 
 func loadVoice(c *Config, getenv func(string) string) error {

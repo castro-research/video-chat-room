@@ -110,3 +110,47 @@ func TestLoadVoiceErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestNodeIDFromHostname(t *testing.T) {
+	for host, want := range map[string]int64{"kurz-0": 0, "kurz-2": 2, "my-app-17": 17} {
+		m := valid()
+		m["KURZ_NODE_ID_FROM_HOSTNAME"] = "true"
+		m["HOSTNAME"] = host
+		m["KURZ_NODE_ID"] = "999" // o hostname manda
+		c, err := Load(env(m))
+		if err != nil || c.NodeID != want {
+			t.Fatalf("%s: node=%d err=%v", host, c.NodeID, err)
+		}
+	}
+	for _, host := range []string{"", "kurz", "kurz-", "kurz-abc", "kurz-99999"} {
+		m := valid()
+		m["KURZ_NODE_ID_FROM_HOSTNAME"] = "true"
+		m["HOSTNAME"] = host
+		if _, err := Load(env(m)); err == nil {
+			t.Fatalf("hostname %q should be rejected", host)
+		}
+	}
+}
+
+func TestRateLimitConfig(t *testing.T) {
+	c, err := Load(env(valid()))
+	if err != nil || !c.RateLimit.Enabled || c.RateLimit.WritePerSec != 20 || c.TrustedProxy || c.OtelEndpoint != "" {
+		t.Fatalf("defaults: %+v %v", c, err)
+	}
+	m := valid()
+	m["KURZ_RATELIMIT"] = "off"
+	m["KURZ_RATELIMIT_AUTH_BURST"] = "5"
+	m["KURZ_TRUSTED_PROXY"] = "true"
+	m["KURZ_OTEL_ENDPOINT"] = "http://otel:4318"
+	c, err = Load(env(m))
+	if err != nil || c.RateLimit.Enabled || c.RateLimit.AuthBurst != 5 || !c.TrustedProxy || c.OtelEndpoint != "http://otel:4318" {
+		t.Fatalf("overrides: %+v %v", c, err)
+	}
+	for k, v := range map[string]string{"KURZ_RATELIMIT": "maybe", "KURZ_RATELIMIT_WRITE_BURST": "-1", "KURZ_RATELIMIT_AUTH_PER_MIN": "x"} {
+		m := valid()
+		m[k] = v
+		if _, err := Load(env(m)); err == nil {
+			t.Fatalf("%s=%s should fail", k, v)
+		}
+	}
+}
