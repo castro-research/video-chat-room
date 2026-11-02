@@ -293,3 +293,9 @@ func isNotFound(err error) bool {
 	var he *httpx.Error
 	return errors.As(err, &he) && he.Status == 404
 }
+
+// Access devolve o canal e o que o usuário pode nele, para o módulo de mensagens. Canal invisível é 404.
+func (s *Service) Access(ctx context.Context, user, channelID int64) (Channel, permissions.Perm, error) {
+	ch, _, p, err := s.access(ctx, user, channelID)
+	return ch, p, err
+}
