@@ -46,6 +46,13 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
 | `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 
+### Docker Swarm (nó único, ex.: pizito)
+
+`./deploy.sh` no nó do swarm: builda a imagem e sobe a stack `kurzserver` (`stack.yml`: kurz, Postgres 18 e SeaweedFS). Portas: `30082` (API + WebSocket) e `30083` (S3,
+que o cliente acessa direto nas URLs pré-assinadas). Os dados ficam em bind mounts sob `KURZ_DATA_DIR` (padrão `/mnt/ssd/@docker/concordia`: `postgres/` e `seaweedfs/`, criados pelo `deploy.sh`). Os segredos nascem em `server/.env` (fora do git) e o `KURZ_SECRET` é copiado de `experimentos/.env`, porque tem de ser o do SFU.
+Atrás de um proxy/túnel: `KURZ_SFU_URL=wss://<host>/v1/media ./deploy.sh`.
+O build roda na arquitetura do nó; de outra máquina use `docker build --platform linux/amd64 -t kurz/server:latest server/`.
+
 ### Armazenamento (S3) e Postgres no compose
 
 - **S3 dos anexos: SeaweedFS** (`chrislusf/seaweedfs:4.47`, tag pinada; `weed server -s3`, gateway S3 em `:8333`, path-style, região `us-east-1`).
