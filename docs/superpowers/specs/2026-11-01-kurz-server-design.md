@@ -12,7 +12,7 @@ Servidor multi-guild inspirado no Discord para o cliente Kurz (Apple). Projeto d
 | Arquitetura | Monólito modular, stateless, 2+ réplicas no k8s local (kind/k3d) |
 | Store | Postgres como único store de estado (dados, outbox, fila de jobs, FTS) |
 | Eventos | Interface `Bus` com implementação Postgres (outbox + `LISTEN/NOTIFY`); NATS JetStream fica como evolução |
-| Anexos | MinIO (S3) com URL pré-assinada |
+| Anexos | SeaweedFS (S3) com URL pré-assinada |
 | Mídia | SFU em Go/pion existente (`experimentos/`) permanece; o monólito assume o papel do manager |
 | Escala-alvo | 100 usuários conectados, 10 guilds, 20 msg/s |
 
@@ -38,7 +38,7 @@ Servidor multi-guild inspirado no Discord para o cliente Kurz (Apple). Projeto d
 - RF11. Enviar, listar (paginação por cursor, nos dois sentidos) e marcar como lido.
 - RF12. Editar e excluir (próprias, ou de qualquer um com "gerenciar mensagens"). Respostas (reply).
 - RF13. Reações com emoji, adicionar e remover.
-- RF14. Anexos: upload para MinIO via URL pré-assinada, limite de tamanho e tipo.
+- RF14. Anexos: upload para SeaweedFS (S3) via URL pré-assinada, limite de tamanho e tipo.
 - RF15. Busca full-text por guild ou canal, respeitando quem pode ver o canal.
 
 **Tempo real**
@@ -76,7 +76,7 @@ Medidos com bots na escala modesta.
 
 **Operação**
 - RNF14. Logs JSON, métricas Prometheus (latência, conexões WS, lag do outbox) e traces OpenTelemetry.
-- RNF15. Migrações versionadas e reversíveis. Um comando sobe o ambiente local completo (kind, Postgres, MinIO, monólito).
+- RNF15. Migrações versionadas e reversíveis. Um comando sobe o ambiente local completo (kind, Postgres, SeaweedFS, monólito).
 - RNF16. Testes unitários nos domínios, integração com Postgres real (testcontainers) e gerador de carga em Go que verifica RNF1 e RNF2.
 
 ## Arquitetura

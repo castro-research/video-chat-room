@@ -4,7 +4,7 @@ namespace: kurz
 resources:
   - namespace.yaml
   - postgres.yaml
-  - minio.yaml
+  - seaweedfs.yaml
   - kurz.yaml
 configMapGenerator:
   - name: kurz-config
@@ -14,5 +14,5 @@ configMapGenerator:
       - KURZ_SERVER_NAME=Kurz
       - KURZ_REGISTRATION=open
       - KURZ_RATELIMIT=on
-      - KURZ_S3_ENDPOINT=minio.kurz.svc:9000
+      - KURZ_S3_ENDPOINT=seaweedfs.kurz.svc:8333
       - KURZ_S3_BUCKET=kurz

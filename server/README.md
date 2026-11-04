@@ -7,13 +7,13 @@ Servidor multi-guild em Go. Design: `docs/superpowers/specs/2026-11-01-kurz-serv
 ```bash
 cd server
 make db-up   # Postgres em localhost:5433
-make s3-up   # MinIO em localhost:9000 (console :9001, kurzdev / kurzdev-secret); opcional, liga os anexos
-make run     # servidor em :8080 (aplica as migrações sozinho; usa o MinIO local)
-make test    # testes, incluindo Postgres real e, se o MinIO estiver de pé, S3 real (senão fake, com SKIP explícito)
+make s3-up   # SeaweedFS (S3) em localhost:8333 (kurzdev / kurzdev-secret); opcional, liga os anexos
+make run     # servidor em :8080 (aplica as migrações sozinho; usa o SeaweedFS local)
+make test    # testes, incluindo Postgres real e, se o SeaweedFS estiver de pé, S3 real (senão fake, com SKIP explícito)
 make test-short     # sem os testes de volume
 make bench-search   # mede a busca com 1M de mensagens (KURZ_BENCH_MESSAGES muda o volume)
 make loadtest       # bots de carga contra um servidor de pé (veja "Teste de carga")
-make kind-up        # cluster kind local com Postgres, MinIO e 2 réplicas (veja "Kubernetes")
+make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (veja "Kubernetes")
 ```
 
 ## Configuração
@@ -26,9 +26,9 @@ make kind-up        # cluster kind local com Postgres, MinIO e 2 réplicas (veja
 | `KURZ_NODE_ID` | `0` | 0 a 1023; deve ser único por réplica (bits do snowflake) |
 | `KURZ_SERVER_NAME` | `Kurz` | |
 | `KURZ_REGISTRATION` | `open` | `open` ou `closed` |
-| `KURZ_S3_ENDPOINT` | vazio | `host:port` ou URL do S3/MinIO. **Vazio desliga os anexos** (endpoints respondem 501, sem a capability `attachments`) |
+| `KURZ_S3_ENDPOINT` | vazio | `host:port` ou URL do S3 (SeaweedFS no compose). **Vazio desliga os anexos** (endpoints respondem 501, sem a capability `attachments`) |
 | `KURZ_S3_BUCKET` | `kurz` | criado na subida se não existir |
-| `KURZ_S3_ACCESS_KEY` / `KURZ_S3_SECRET_KEY` | `kurzdev` / `kurzdev-secret` | credenciais do MinIO do compose |
+| `KURZ_S3_ACCESS_KEY` / `KURZ_S3_SECRET_KEY` | `kurzdev` / `kurzdev-secret` | credenciais de dev do compose (`deploy/seaweedfs/s3.json`) |
 | `KURZ_S3_REGION` | `us-east-1` | |
 | `KURZ_S3_PUBLIC_ENDPOINT` | = endpoint | host que o CLIENTE alcança, usado nas URLs pré-assinadas (a assinatura cobre o host) |
 | `KURZ_SECRET` | vazio | segredo HS256 do token de mídia, **o mesmo do SFU** (16 bytes ou mais). Vem junto com `KURZ_SFU_URL`; vazios desligam a voz (501 `not_supported`, sem a capability `voice`) |
@@ -41,7 +41,17 @@ make kind-up        # cluster kind local com Postgres, MinIO e 2 réplicas (veja
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
 | `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 
-A imagem oficial `minio/minio` saiu do Docker Hub; o compose usa `cgr.dev/chainguard/minio`.
+### Armazenamento (S3) e Postgres no compose
+
+- **S3 dos anexos: SeaweedFS** (`chrislusf/seaweedfs:4.47`, tag pinada; `weed server -s3`, gateway S3 em `:8333`, path-style, região `us-east-1`).
+  As credenciais de dev vêm das identities de `deploy/seaweedfs/s3.json` (identity `kurzdev` com `Admin`, necessário porque o servidor cria o bucket na subida).
+  O cliente continua sendo o `minio-go`, que só fala S3.
+- **`KURZ_S3_PUBLIC_ENDPOINT` tem que ser o host que o cliente usa** para alcançar o S3 (ex.: `localhost:8333`, ou `localhost:29000` no kind). A URL pré-assinada
+  usa SigV4, que assina o cabeçalho `Host`: se o cliente chamar outro host (ou outra porta) que o assinado, o S3 responde `SignatureDoesNotMatch`.
+  O `KURZ_S3_ENDPOINT` (servidor para S3) pode ser um nome interno diferente.
+- **Postgres 18**: a imagem usa `/var/lib/postgresql` como volume e `PGDATA=/var/lib/postgresql/18/docker`; o compose e o StatefulSet montam esse diretório.
+  Um volume criado com o Postgres 17 **não abre** no 18: recrie-o (`docker compose down -v` dentro de `server/`, só apaga dados de dev deste projeto; no kind,
+  `make kind-down && make kind-up`, ou apague o PVC `data-postgres-0`) ou migre os dados com `pg_upgrade`/dump e restore.
 
 ## Tempo real
 
@@ -101,16 +111,16 @@ Os resultados dependem da máquina: rode ao menos duas vezes e olhe a variação
 
 ```bash
 make kind-up            # cria o cluster kind "kurz", builda e carrega a imagem, aplica os manifests e espera o rollout
-curl localhost:28080/healthz        # API (NodePort 30080); MinIO em localhost:29000
+curl localhost:28080/healthz        # API (NodePort 30080); S3 em localhost:29000
 make kind-loadtest      # desliga o rate limit (overlay kind-loadtest) e roda o loadtest contra as 2 réplicas
 make kind-kill          # mata kurz-1 sem aviso: os clientes reconectam, o servidor segue
 make kind-down
 ```
 
 - `Dockerfile`: multi-stage, build estático (`CGO_ENABLED=0`), imagem `distroless/static:nonroot`; inclui o binário `/kurz-loadtest`.
-- `deploy/k8s/base` (kustomize): namespace `kurz`, Postgres (StatefulSet + PVC, **só para estudo**), MinIO (Deployment, `emptyDir`, bucket criado pelo servidor),
+- `deploy/k8s/base` (kustomize): namespace `kurz`, Postgres (StatefulSet + PVC, **só para estudo**), SeaweedFS `chrislusf/seaweedfs:4.47` (Deployment, `emptyDir`, bucket criado pelo servidor),
   o monólito como **StatefulSet** de 2 réplicas (`KURZ_NODE_ID_FROM_HOSTNAME=true`: `kurz-0` → node 0, `kurz-1` → node 1, estável quando o pod é recriado), Service,
   ConfigMap (gerado, com hash no nome: mudar a config reinicia as réplicas), Secrets, probes em `/healthz`, requests/limits e PodDisruptionBudget.
-- `deploy/k8s/overlays/kind` expõe a API e o MinIO por NodePort; `kind-loadtest` acrescenta `KURZ_RATELIMIT=off`.
+- `deploy/k8s/overlays/kind` expõe a API e o S3 por NodePort; `kind-loadtest` acrescenta `KURZ_RATELIMIT=off`.
 - **Os Secrets são de desenvolvimento e estão no repositório de propósito** (valores marcados `DEV-ONLY`/`dev-only`). Nada disso serve fora do kind.
-- Dívidas: Postgres único sem backup; MinIO sem persistência; a liveness em `/healthz` pinga o banco (tolerância alta de 60 s); sem Ingress/TLS; sem HPA; o rate limit é por réplica.
+- Dívidas: Postgres único sem backup; SeaweedFS sem persistência; a liveness em `/healthz` pinga o banco (tolerância alta de 60 s); sem Ingress/TLS; sem HPA; o rate limit é por réplica.

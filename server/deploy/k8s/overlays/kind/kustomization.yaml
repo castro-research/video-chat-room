@@ -1,4 +1,4 @@
-# Para o cluster kind: publica a API (localhost:28080) e o MinIO (localhost:29000) por NodePort.
+# Para o cluster kind: publica a API (localhost:28080) e o S3 do SeaweedFS (localhost:29000) por NodePort.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -14,7 +14,7 @@ patches:
     patch: |-
       - { op: replace, path: /spec/type, value: NodePort }
       - { op: add, path: /spec/ports/0/nodePort, value: 30080 }
-  - target: { kind: Service, name: minio }
+  - target: { kind: Service, name: seaweedfs }
     patch: |-
       - { op: replace, path: /spec/type, value: NodePort }
       - { op: add, path: /spec/ports/0/nodePort, value: 30900 }

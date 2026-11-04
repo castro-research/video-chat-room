@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "kurzdev",
+      "credentials": [{ "accessKey": "kurzdev", "secretKey": "kurzdev-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}
