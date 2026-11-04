@@ -254,6 +254,10 @@ public struct VoiceParticipant: Codable, Hashable, Sendable, Identifiable {
     /// Compartilhando a tela.
     public var sharing: Bool
     public var id: String { user.id }
+
+    public init(user: User, muted: Bool = false, camOn: Bool = false, sharing: Bool = false) {
+        self.user = user; self.muted = muted; self.camOn = camOn; self.sharing = sharing
+    }
 }
 
 /// Resposta de `POST /v1/channels/{id}/voice/join`. Mesmos campos que o `VoiceSession` do app (media.url/token, iceServers),

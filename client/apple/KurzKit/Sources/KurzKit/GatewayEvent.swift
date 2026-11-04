@@ -43,9 +43,16 @@ public struct ReactionEvent: Codable, Hashable, Sendable {
     public var messageId: String
     public var userId: String
     public var emoji: String
+    public init(channelId: String, messageId: String, userId: String, emoji: String) {
+        self.channelId = channelId; self.messageId = messageId; self.userId = userId; self.emoji = emoji
+    }
 }
 
-public struct GuildCreateEvent: Codable, Hashable, Sendable { public var userId: String; public var guild: Guild }
+public struct GuildCreateEvent: Codable, Hashable, Sendable {
+    public var userId: String
+    public var guild: Guild
+    public init(userId: String, guild: Guild) { self.userId = userId; self.guild = guild }
+}
 public struct GuildDeleteEvent: Codable, Hashable, Sendable { public var id: String }
 
 public struct MemberEvent: Codable, Hashable, Sendable {
@@ -59,6 +66,7 @@ public struct MemberLeaveEvent: Codable, Hashable, Sendable {
     public var userId: String
     /// `leave`, `kick` ou `ban`.
     public var reason: String
+    public init(guildId: String, userId: String, reason: String) { self.guildId = guildId; self.userId = userId; self.reason = reason }
 }
 
 public struct RoleEvent: Codable, Hashable, Sendable { public var guildId: String; public var role: Role }
