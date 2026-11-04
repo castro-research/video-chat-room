@@ -275,7 +275,7 @@ struct ProfileSheet: View {
             TextField("o que estás a fazer", text: $subtitle).textFieldStyle(.roundedBorder)
             errorText(app.auth.error)
             HStack {
-                Button("Terminar sessão", role: .destructive) { Task { await app.auth.logout(); dismiss() } }
+                Button("Terminar sessão", role: .destructive) { Task { await app.logout(); dismiss() } }
                 Spacer()
                 Button("Cancelar") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Guardar", action: save).keyboardShortcut(.defaultAction).disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || busy)

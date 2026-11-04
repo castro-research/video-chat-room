@@ -43,7 +43,8 @@ final class AppModel: ObservableObject {
         for child in [servers.objectWillChange, auth.objectWillChange, session.objectWillChange] {
             child.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         }
-        servers.$selected.dropFirst().sink { [weak self] url in self?.auth.use(url) }.store(in: &bag)
+        // trocar de servidor: sai da sala (REST e SFU) enquanto `workspace.api` ainda é a sessão do servidor antigo
+        servers.$selected.dropFirst().sink { [weak self] url in self?.leaveVoice(); self?.auth.use(url) }.store(in: &bag)
         auth.$phase.removeDuplicates().sink { [weak self] phase in self?.phaseChanged(phase) }.store(in: &bag)
         // mudo/câmara/partilha refletem-se no gateway enquanto se está numa sala
         Publishers.CombineLatest3($muted, $camOn, $sharing).dropFirst().sink { [weak self] _ in self?.pushVoiceState() }.store(in: &bag)
@@ -105,13 +106,21 @@ final class AppModel: ObservableObject {
         syncCapture()
     }
 
-    func leaveVoice() {
+    /// Terminar sessão: a sala é deixada no servidor antes de os tokens irem embora (senão o `leave` falhava e a voz só caía no varrimento).
+    func logout() async {
+        let left = voiceChannel
+        leaveVoice(notifyServer: false)  // o estado local e o SFU acabam já
+        await auth.logout(leavingVoice: left?.id)
+    }
+
+    /// [notifyServer] false: quem chama trata do `leave` REST (ver `logout`). Com a sessão expirada o `leave` é só uma tentativa: a saída local é imediata.
+    func leaveVoice(notifyServer: Bool = true) {
         let left = voiceChannel
         voiceChannel = nil; muted = false; camOn = false; sharing = false; showingVoice = false
         roomTask?.cancel(); roomTask = nil
         syncCapture()
         // o servidor tira-nos do estado de voz (idempotente); sem isto só o timeout de 3 min o faria
-        if let left, let api = workspace?.api { Task { try? await api.leaveVoice(channelId: left.id) } }
+        if notifyServer, let left, let api = workspace?.api { Task { try? await api.leaveVoice(channelId: left.id) } }
     }
 
     private func pushVoiceState() {

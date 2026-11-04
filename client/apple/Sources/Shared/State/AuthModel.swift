@@ -107,8 +107,9 @@ final class AuthModel: ObservableObject {
         }
     }
 
-    func logout() async {
-        await api.logout()
+    /// Sai da sessão; [voiceChannelId] (se estava numa sala) é deixado no servidor ANTES de os tokens serem apagados.
+    func logout(leavingVoice voiceChannelId: String? = nil) async {
+        await api.logout(leavingVoice: voiceChannelId)
         user = nil; phase = .signedOut; error = nil
     }
 

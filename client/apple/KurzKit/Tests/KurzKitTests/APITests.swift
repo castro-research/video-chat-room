@@ -166,6 +166,42 @@ struct APITests {
         #expect(hits.requests.first?.path == "/v1/auth/logout" && hits.requests.first?.bodyJSON?["refreshToken"] as? String == "RX")
     }
 
+    @Test func logoutSaiDaVozAntesDeRevogarOsTokens() async throws {
+        let hits = Counter()
+        let srv = MockServer { r in hits.hit(r); return .noContent }
+        srv.seed(access: "AX", refresh: "RX")
+        let api = srv.api()
+        await api.logout(leavingVoice: "42")
+        let paths = hits.requests.map(\.path)
+        #expect(paths == ["/v1/channels/42/voice/leave", "/v1/auth/logout"])
+        #expect(hits.requests[0].bearer == "AX")  // o leave ainda vai autenticado
+        #expect(try srv.store.load(for: srv.base) == nil)
+        #expect(api.authState == .unauthenticated(.loggedOut))
+    }
+
+    @Test func logoutSegueSeOLeaveDaVozFalhaOuDemora() async throws {
+        let failing = MockServer { r in r.path.hasSuffix("/voice/leave") ? .error(500, "internal") : .noContent }
+        failing.seed()
+        await failing.api().logout(leavingVoice: "42")
+        #expect(try failing.store.load(for: failing.base) == nil)
+
+        let slow = MockServer { r in r.path.hasSuffix("/voice/leave") ? .json(200, "{}", delay: 5) : .noContent }
+        slow.seed()
+        let t0 = Date()
+        await slow.api().logout(leavingVoice: "42", voiceTimeout: 0.2)
+        #expect(Date().timeIntervalSince(t0) < 2)
+        #expect(try slow.store.load(for: slow.base) == nil)
+    }
+
+    @Test func logoutComSessaoJaExpiradaNaoPendura() async throws {
+        let hits = Counter()
+        let srv = MockServer { r in hits.hit(r); return .noContent }  // sem tokens: o leave nem sai do cliente
+        let api = srv.api()
+        await api.logout(leavingVoice: "42")
+        #expect(hits.count == 0)
+        #expect(api.authState == .unauthenticated(.loggedOut))
+    }
+
     @Test func baseURLComPrefixoEBarraFinal() async throws {
         let hits = Counter()
         let srv = MockServer { r in hits.hit(r); return .json(200, Sample.user) }

@@ -55,6 +55,21 @@ public final class KurzAPI: Sendable {
     /// Revoga o refresh token no servidor (melhor esforço) e limpa o store. Sempre acaba em `.unauthenticated(.loggedOut)`.
     public func logout() async { await sessions.logout() }
 
+    /// Logout que antes tira o utilizador da sala de voz [channelId] no servidor: a ordem importa, porque depois do logout os tokens já
+    /// não existem e o `leave` falharia em silêncio (o utilizador ficaria "ligado" até o varrimento de 3 min). O `leave` é melhor
+    /// esforço e limitado por [voiceTimeout]: se falhar ou demorar, o logout segue na mesma. Sem sessão válida (expirada) o `leave` falha logo.
+    public func logout(leavingVoice channelId: String?, voiceTimeout: TimeInterval = 3) async {
+        if let channelId {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { try? await self.leaveVoice(channelId: channelId) }
+                group.addTask { try? await Task.sleep(nanoseconds: UInt64(voiceTimeout * 1_000_000_000)) }
+                await group.next()  // o primeiro a acabar (leave ou limite) basta
+                group.cancelAll()
+            }
+        }
+        await sessions.logout()
+    }
+
     public func me() async throws -> User { try await get("/v1/me") }
 
     public func updateMe(name: String? = nil, subtitle: String? = nil, hue: Double? = nil) async throws -> User {
