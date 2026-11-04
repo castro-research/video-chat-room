@@ -2,7 +2,7 @@ DB_URL    = postgres://kurz:kurz@localhost:5433/kurz?sslmode=disable
 ADMIN_URL = postgres://kurz:kurz@localhost:5433/postgres?sslmode=disable
 S3_ENDPOINT = localhost:8333
 
-.PHONY: db-up db-down s3-up s3-down test test-short run bench-search loadtest image kind-up kind-down kind-loadtest-mode kind-loadtest kind-kill
+.PHONY: db-up db-down s3-up s3-down test test-short run bench-search loadtest image
 
 db-up:
 	docker compose up -d --wait db
@@ -44,36 +44,5 @@ DURATION ?= 30s
 loadtest:
 	go run ./loadtest --url $(URL) --users $(USERS) --rate $(RATE) --duration $(DURATION)
 
-# ---- Kubernetes local (kind) ----
-KIND_CLUSTER = kurz
-KCTL = kubectl --context kind-$(KIND_CLUSTER)
-KIND_URL = http://localhost:28080
-
 image:
 	docker build -t kurz/server:dev .
-
-# Sobe tudo: cluster kind, imagem, Postgres, SeaweedFS e 2 réplicas do monólito. API em http://localhost:28080, S3 em :29000.
-kind-up: image
-	@kind get clusters | grep -qx $(KIND_CLUSTER) || kind create cluster --config deploy/kind.yaml
-	kind load docker-image kurz/server:dev --name $(KIND_CLUSTER)
-	$(KCTL) apply -k deploy/k8s/overlays/kind
-	$(KCTL) -n kurz rollout restart statefulset/kurz
-	$(KCTL) -n kurz rollout status statefulset/postgres --timeout=180s
-	$(KCTL) -n kurz rollout status deployment/seaweedfs --timeout=180s
-	$(KCTL) -n kurz rollout status statefulset/kurz --timeout=180s
-	@curl -sf $(KIND_URL)/healthz >/dev/null && echo "kurz ok em $(KIND_URL)"
-
-kind-down:
-	kind delete cluster --name $(KIND_CLUSTER)
-
-# Desliga o rate limit (o gerador vem de um IP só) e espera as réplicas trocarem.
-kind-loadtest-mode:
-	$(KCTL) apply -k deploy/k8s/overlays/kind-loadtest
-	$(KCTL) -n kurz rollout status statefulset/kurz --timeout=180s
-
-kind-loadtest: kind-loadtest-mode
-	go run ./loadtest --url $(KIND_URL) --users $(USERS) --rate $(RATE) --duration $(DURATION)
-
-# Mata a réplica kurz-1 sem aviso (RNF8). Rode durante `make kind-loadtest` com CHAOS=1 no loadtest.
-kind-kill:
-	$(KCTL) -n kurz delete pod kurz-1 --grace-period=0 --force

@@ -1,7 +1,7 @@
 // Package obs expõe as métricas Prometheus (RNF14). Cada App tem o seu registro, então testes não colidem.
 //
 // /metrics é interno: sem auth e fora do rate limit. Com KURZ_METRICS_ADDR ele sai do listener da API e vai para um
-// listener próprio (no Kubernetes, uma porta que nenhum Service público expõe; o Prometheus raspa pelo IP do pod).
+// listener próprio (uma porta sem publicação no host; o Prometheus raspa pela rede interna).
 // Sem KURZ_METRICS_ADDR (dev) continua no listener principal: não o exponha na Internet.
 package obs
 

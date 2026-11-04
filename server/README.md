@@ -13,7 +13,6 @@ make test    # testes, incluindo Postgres real e, se o SeaweedFS estiver de pé,
 make test-short     # sem os testes de volume
 make bench-search   # mede a busca com 1M de mensagens (KURZ_BENCH_MESSAGES muda o volume)
 make loadtest       # bots de carga contra um servidor de pé (veja "Teste de carga")
-make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (veja "Kubernetes")
 ```
 
 ## Configuração
@@ -40,7 +39,7 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 | `KURZ_RATELIMIT_WRITE_BURST` / `KURZ_RATELIMIT_WRITE_PER_SEC` | `60` / `20` | token bucket **por usuário** nas demais escritas (POST/PUT/PATCH/DELETE; sem token válido, por IP) |
 | `KURZ_WS_FRAME_RATE` / `KURZ_WS_FRAME_BURST` | `10` / `20` | token bucket **por conexão WebSocket** para frames do cliente (heartbeat custa 1, `voice.state.set` custa 4). Estourou: fecha com `4011` |
 | `KURZ_WS_MAX_SESSIONS_PER_USER` | `20` | teto de sessões do gateway por usuário e réplica (ao vivo ou esperando resume; as abandonadas são recolhidas antes de recusar). Acima: `4012` |
-| `KURZ_METRICS_ADDR` | vazio | listener próprio do `/metrics` (ex.: `:9090`), **sem auth** e fora do rate limit; nesse caso o `/metrics` é **removido** do listener da API (404). **Vazio = `/metrics` no listener principal, só para dev** (o servidor avisa no log). No k8s a porta é `9090`, só no pod (sem Service/NodePort) |
+| `KURZ_METRICS_ADDR` | vazio | listener próprio do `/metrics` (ex.: `:9090`), **sem auth** e fora do rate limit; nesse caso o `/metrics` é **removido** do listener da API (404). **Vazio = `/metrics` no listener principal, só para dev** (o servidor avisa no log). No Swarm a porta é `9090`, sem porta publicada |
 | `KURZ_REFRESH_RETENTION_DAYS` | `7` | job horário apaga refresh tokens expirados, usados ou revogados há mais que isso (a tabela crescia a cada login e refresh). Passado o prazo, reapresentar um token usado dá 401 sem revogar a família |
 | `KURZ_JOBS_FAILED_RETENTION_DAYS` | `7` | jobs que esgotaram as tentativas são apagados depois disso (`kurz_jobs_failed` conta os que ainda estão lá: alerte antes). Os concluídos saem em 24 h |
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
@@ -48,22 +47,22 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 
 ### Docker Swarm (nó único, ex.: pizito)
 
-`./deploy.sh` no nó do swarm: builda a imagem e sobe a stack `kurzserver` (`stack.yml`: kurz, Postgres 18 e SeaweedFS). Portas: `30082` (API + WebSocket) e `30083` (S3,
-que o cliente acessa direto nas URLs pré-assinadas). Os dados ficam em bind mounts sob `KURZ_DATA_DIR` (padrão `/mnt/ssd/@docker/concordia`: `postgres/` e `seaweedfs/`, criados pelo `deploy.sh`). Os segredos nascem em `server/.env` (fora do git) e o `KURZ_SECRET` é copiado de `experimentos/.env`, porque tem de ser o do SFU.
-Atrás de um proxy/túnel: `KURZ_SFU_URL=wss://<host>/v1/media ./deploy.sh`.
-O build roda na arquitetura do nó; de outra máquina use `docker build --platform linux/amd64 -t kurz/server:latest server/`.
+`./deploy.sh` no nó do swarm: builda a imagem e sobe a stack `concordia` (`stack.yml`: kurz, Postgres 18 e SeaweedFS). Portas: `30082` (API + WebSocket) e `30083` (S3,
+que o cliente acessa direto nas URLs pré-assinadas). O `deploy.sh` só lê `server/.env`, builda e faz o `docker stack deploy`; o resto é pré-requisito. Os dados ficam em bind mounts sob `KURZ_DATA_DIR` (`postgres/` e `seaweedfs/`, criados à mão), o nó já tem de estar no Swarm e o `.s3.json` (credenciais do SeaweedFS) tem de existir ao lado do `stack.yml`.
+Sem valores padrão: o `server/.env` (fora do git) define `POSTGRES_PASSWORD`, `KURZ_JWT_SECRET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_CONFIG_NAME` (nome do config do Swarm; troque ao mudar o `.s3.json`), `KURZ_SECRET` (o do SFU), `KURZ_IMAGE`, `KURZ_DATA_DIR`, `KURZ_SFU_URL`, `KURZ_S3_PUBLIC_ENDPOINT` e `KURZ_TRUSTED_PROXY` (`true` só atrás de um proxy que sobrescreve o `X-Forwarded-For`).
+`Dockerfile`: multi-stage, build estático (`CGO_ENABLED=0`), imagem `distroless/static:nonroot`; inclui o binário `/kurz-loadtest`. O build roda na arquitetura do nó; de outra máquina use `docker build --platform linux/amd64 -t kurz/server:latest server/`.
 
 ### Armazenamento (S3) e Postgres no compose
 
 - **S3 dos anexos: SeaweedFS** (`chrislusf/seaweedfs:4.47`, tag pinada; `weed server -s3`, gateway S3 em `:8333`, path-style, região `us-east-1`).
   As credenciais de dev vêm das identities de `deploy/seaweedfs/s3.json` (identity `kurzdev` com `Admin`, necessário porque o servidor cria o bucket na subida).
   O cliente continua sendo o `minio-go`, que só fala S3.
-- **`KURZ_S3_PUBLIC_ENDPOINT` tem que ser o host que o cliente usa** para alcançar o S3 (ex.: `localhost:8333`, ou `localhost:29000` no kind). A URL pré-assinada
+- **`KURZ_S3_PUBLIC_ENDPOINT` tem que ser o host que o cliente usa** para alcançar o S3 (ex.: `localhost:8333`). A URL pré-assinada
   usa SigV4, que assina o cabeçalho `Host`: se o cliente chamar outro host (ou outra porta) que o assinado, o S3 responde `SignatureDoesNotMatch`.
   O `KURZ_S3_ENDPOINT` (servidor para S3) pode ser um nome interno diferente.
-- **Postgres 18**: a imagem usa `/var/lib/postgresql` como volume e `PGDATA=/var/lib/postgresql/18/docker`; o compose e o StatefulSet montam esse diretório.
-  Um volume criado com o Postgres 17 **não abre** no 18: recrie-o (`docker compose down -v` dentro de `server/`, só apaga dados de dev deste projeto; no kind,
-  `make kind-down && make kind-up`, ou apague o PVC `data-postgres-0`) ou migre os dados com `pg_upgrade`/dump e restore.
+- **Postgres 18**: a imagem usa `/var/lib/postgresql` como volume e `PGDATA=/var/lib/postgresql/18/docker`; o compose e o Swarm montam esse diretório.
+  Um volume criado com o Postgres 17 **não abre** no 18: recrie-o (`docker compose down -v` dentro de `server/`, só apaga dados de dev deste projeto)
+  ou migre os dados com `pg_upgrade`/dump e restore.
 
 ## Tempo real
 
@@ -90,7 +89,7 @@ nem aplica `speak`: o servidor só para de emitir tokens, limpa o estado e forç
 Token bucket em memória (`internal/platform/ratelimit`): `POST /v1/auth/*` por IP e as demais escritas por usuário. Estourou: `429`
 `{"code":"rate_limited"}` com `Retry-After` em segundos (contrato). Leituras, `/healthz` e `/metrics` não são limitados. Buckets cheios
 (ociosos) são varridos a cada minuto. **Dívida:** o limite é por réplica, não global; com N réplicas um cliente pode chegar a N vezes o
-configurado (global exigiria Redis ou afinidade no balanceador). Atrás de proxy/Ingress, ligue `KURZ_TRUSTED_PROXY=true`, senão todos
+configurado (global exigiria Redis ou afinidade no balanceador). Atrás de proxy, ligue `KURZ_TRUSTED_PROXY=true`, senão todos
 os clientes parecem ter o IP do proxy.
 
 ## Observabilidade
@@ -118,21 +117,3 @@ latência REST de escrita e leitura e a ponta a ponta (do `POST` até o `message
 RNF1 (e2e p95 < 150 ms, p99 < 400 ms) e RNF2 (leitura p95 < 50 ms, escrita p95 < 100 ms), mais perda de eventos e erros; sai com código 1 se algo violar.
 Os sockets reconectam sozinhos (backoff exponencial com jitter total; `resume` quando a sessão ainda existe). `--chaos` tolera perda/erros e exige que todos os sockets voltem (RNF8).
 Os resultados dependem da máquina: rode ao menos duas vezes e olhe a variação.
-
-## Kubernetes (kind)
-
-```bash
-make kind-up            # cria o cluster kind "kurz", builda e carrega a imagem, aplica os manifests e espera o rollout
-curl localhost:28080/healthz        # API (NodePort 30080); S3 em localhost:29000
-make kind-loadtest      # desliga o rate limit (overlay kind-loadtest) e roda o loadtest contra as 2 réplicas
-make kind-kill          # mata kurz-1 sem aviso: os clientes reconectam, o servidor segue
-make kind-down
-```
-
-- `Dockerfile`: multi-stage, build estático (`CGO_ENABLED=0`), imagem `distroless/static:nonroot`; inclui o binário `/kurz-loadtest`.
-- `deploy/k8s/base` (kustomize): namespace `kurz`, Postgres (StatefulSet + PVC, **só para estudo**), SeaweedFS `chrislusf/seaweedfs:4.47` (Deployment, `emptyDir`, bucket criado pelo servidor),
-  o monólito como **StatefulSet** de 2 réplicas (`KURZ_NODE_ID_FROM_HOSTNAME=true`: `kurz-0` → node 0, `kurz-1` → node 1, estável quando o pod é recriado), Service,
-  ConfigMap (gerado, com hash no nome: mudar a config reinicia as réplicas), Secrets, probes em `/healthz`, requests/limits e PodDisruptionBudget.
-- `deploy/k8s/overlays/kind` expõe a API e o S3 por NodePort; `kind-loadtest` acrescenta `KURZ_RATELIMIT=off`.
-- **Os Secrets são de desenvolvimento e estão no repositório de propósito** (valores marcados `DEV-ONLY`/`dev-only`). Nada disso serve fora do kind.
-- Dívidas: Postgres único sem backup; SeaweedFS sem persistência; a liveness em `/healthz` pinga o banco (tolerância alta de 60 s); sem Ingress/TLS; sem HPA; o rate limit é por réplica.
