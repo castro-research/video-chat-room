@@ -731,3 +731,50 @@ func waitFor(t *testing.T, cond func() bool) {
 	}
 	t.Fatal("condition not met in time")
 }
+
+// Eventos entregues enquanto o identify monta o ready (sessão registrada, conn ainda nil) entram na fila do
+// attach, sem lacuna no seq. Sincronização por canais, sem sleeps: o produtor entrega N eventos e o attach
+// acontece no meio; a fila final tem de ser first, 1..N em ordem.
+func TestAttachDoesNotLoseEventsDeliveredBeforeIt(t *testing.T) {
+	const n = 200
+	for _, attachAt := range []int{0, 1, 77, n - 1, n} {
+		s := newSession(1, 256)
+		c := newConn(nil, 512)
+		reached := make(chan struct{})
+		proceed := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 1; i <= n; i++ {
+				if i == attachAt+1 {
+					close(reached)
+					<-proceed // pausa o produtor: o attach corre no ponto exato
+				}
+				s.deliver("x", json.RawMessage(`{}`))
+			}
+			if attachAt == n {
+				close(reached)
+				<-proceed
+			}
+		}()
+		<-reached
+		if _, ok := s.attach(c, []byte("first")); !ok {
+			t.Fatal("attach failed")
+		}
+		close(proceed)
+		<-done
+		close(c.out)
+		var got []string
+		for f := range c.out {
+			got = append(got, string(f))
+		}
+		if len(got) != n+1 || got[0] != "first" {
+			t.Fatalf("attachAt=%d: %d frames", attachAt, len(got))
+		}
+		for i, f := range got[1:] {
+			if want := fmt.Sprintf(`"seq":%d,`, i+1); !strings.Contains(f, want) {
+				t.Fatalf("attachAt=%d: frame %d = %s, want %s", attachAt, i, f, want)
+			}
+		}
+	}
+}

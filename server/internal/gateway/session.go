@@ -93,11 +93,14 @@ func (s *session) sinceLocked(after uint64) (frames [][]byte, ok bool) {
 	return frames, true
 }
 
-// attach liga a conexão à sessão, derrubando a anterior (se houver), e enfileira first seguido de frames.
+// attach liga a conexão à sessão, derrubando a anterior (se houver), e enfileira first seguido de tudo o que
+// está no buffer. Os frames são lidos sob o mesmo lock que seta s.conn: nenhum evento entregue entre a leitura
+// e a ligação se perde (antes, o que caía nesse intervalo ficava no ring mas fora da fila, e o seq pulava).
 // Devolve false se a fila não comporta tudo.
-func (s *session) attach(c *conn, first []byte, frames [][]byte) (old *conn, ok bool) {
+func (s *session) attach(c *conn, first []byte) (old *conn, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	frames, _ := s.sinceLocked(0)
 	if len(frames)+1 > cap(c.out) {
 		return nil, false
 	}

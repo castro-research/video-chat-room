@@ -136,7 +136,6 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 		s.guilds[gd.ID] = struct{}{}
 		data.Guilds[i] = guildData{ID: ids.Format(gd.ID), Name: gd.Name, OwnerID: ids.Format(gd.OwnerID)}
 	}
-	frames, _ := s.sinceLocked(0)
 	s.mu.Unlock()
 	if g.voice != nil {
 		vs, err := g.voice.Snapshot(ctx, uid)
@@ -152,7 +151,7 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 		data.Voice = mustJSON(vs)
 	}
 	ready, _ := json.Marshal(frame{Op: opReady, D: mustJSON(data)})
-	if _, ok := s.attach(c, ready, frames); !ok {
+	if _, ok := s.attach(c, ready); !ok {
 		g.drop(s)
 		g.fail(c, websocket.StatusInternalError, "internal error")
 		return nil
