@@ -308,4 +308,73 @@ struct E2ETests {
         #expect(left != nil)
         #expect(try await ana.voiceParticipants(channelId: sala.id).isEmpty)
     }
+
+    @Test("Workspace: os reducers aplicam eventos reais do gateway (nonce, não-lidos, edição, reação, canais)", .enabled(if: e2eURL != nil, skipReason))
+    func workspaceComEventosReais() async throws {
+        let base = e2eURL!
+        let ana = newAPI(base), bob = newAPI(base)
+        _ = try await ana.register(username: "wa_\(uid())", password: "senha-ws-123")
+        let sb = try await bob.register(username: "wb_\(uid())", password: "senha-ws-123")
+        let guild = try await ana.createGuild(name: "WS \(uid())")
+        _ = try await bob.joinInvite(code: try await ana.createInvite(guildId: guild.id).code)
+        let geral = try #require(try await ana.channels(guildId: guild.id).first { $0.kind == .text })
+
+        let gwA = ana.makeGateway(), gwB = bob.makeGateway()
+        let evA = Collector(gwA.events()), evB = Collector(gwB.events())
+        await gwA.start(); await gwB.start()
+        defer { Task { await gwA.stop(); await gwB.stop() } }
+        _ = await waitEvent(evA, "ready ana", { if case .ready = $0 { return true } else { return false } })
+        _ = await waitEvent(evB, "ready bob", { if case .ready = $0 { return true } else { return false } })
+
+        // Bob: estado inicial = ready + REST (como o app faz)
+        var ws = Workspace(meId: sb.user.id)
+        var applied = 0
+        func drain() { let all = evB.all; for e in all[applied...] { ws.apply(e) }; applied = all.count }
+        drain()
+        ws.setGuilds(try await bob.guilds())
+        ws.setChannels(try await bob.channels(guildId: guild.id), guildId: guild.id)
+        ws.setReadStates(try await bob.readStates(guildId: guild.id), guildId: guild.id)
+        ws.setMessages(try await bob.messages(channelId: geral.id), channelId: geral.id)
+        #expect(ws.guilds.map(\.id) == [guild.id] && ChannelTree.firstText(ws.channels[guild.id] ?? [])?.id == geral.id)
+
+        // Mensagem da Ana: chega por evento, conta como não-lida
+        let m1 = try await ana.sendMessage(channelId: geral.id, text: "oi", nonce: "ana-1")
+        await eventually(timeout: 6, "message.create no estado do bob") { drain(); return ws.list(geral.id).contains(m1.id) }
+        #expect(ws.unreadCount(channel: geral.id) == 1 && ws.unreadCount(guild: guild.id) == 1)
+        // o REST confirma o mesmo número de não-lidos
+        #expect(try await bob.readState(channelId: geral.id).unread == 1)
+
+        // Bob lê: markRead + estado local
+        try await bob.markRead(channelId: geral.id, messageId: m1.id)
+        ws.clearUnread(geral.id)
+        ws.setReadStates(try await bob.readStates(guildId: guild.id), guildId: guild.id)
+        #expect(ws.unreadCount(guild: guild.id) == 0)
+
+        // Envio otimista do Bob reconciliado pelo nonce (via evento e via resposta REST)
+        ws.update(geral.id) { $0.addPending(PendingMessage(nonce: "bob-1", text: "olá ana")) }
+        #expect(ws.list(geral.id).rows.count == 2)
+        let sent = try await bob.sendMessage(channelId: geral.id, text: "olá ana", nonce: "bob-1")
+        await eventually(timeout: 4, "eco com nonce") { drain(); return ws.list(geral.id).pending.isEmpty }
+        ws.update(geral.id) { $0.upsert(sent) }
+        #expect(ws.list(geral.id).messages.map(\.id) == [m1.id, sent.id] && ws.unreadCount(channel: geral.id) == 0)
+
+        // Edição, reação e exclusão da Ana
+        _ = try await ana.editMessage(channelId: geral.id, messageId: m1.id, text: "oi (editado)")
+        try await ana.addReaction(channelId: geral.id, messageId: m1.id, emoji: "👍")
+        await eventually(timeout: 4, "update + reação") {
+            drain()
+            let m = ws.list(geral.id).message(m1.id)
+            return m?.text == "oi (editado)" && m?.reactions == [Reaction(emoji: "👍", count: 1, me: false)]
+        }
+        try await ana.deleteMessage(channelId: geral.id, messageId: m1.id)
+        await eventually(timeout: 4, "message.delete") { drain(); return !ws.list(geral.id).contains(m1.id) }
+
+        // Canais novos pelo gateway
+        let sala = try await ana.createChannel(guildId: guild.id, name: "sala", kind: .voice)
+        await eventually(timeout: 4, "channel.create") { drain(); return ws.channel(sala.id) != nil }
+        try await ana.deleteChannel(sala.id)
+        await eventually(timeout: 4, "channel.delete") { drain(); return ws.channel(sala.id) == nil }
+        #expect(ws.sections(guild.id).flatMap(\.channels).map(\.id) == [geral.id])
+    }
 }
+
