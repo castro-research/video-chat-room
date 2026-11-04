@@ -116,6 +116,8 @@ public actor Gateway {
     }
 
     // Para testes.
+    /// Derruba o socket como numa queda de rede (o laço reconecta e tenta o resume).
+    func debugDropConnection() { socket?.close() }
     var currentSessionId: String? { sessionId }
     var currentSeq: Int { lastSeq }
 
