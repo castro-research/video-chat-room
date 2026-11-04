@@ -9,12 +9,12 @@ Sem Xcode (só Command Line Tools) o XCTest não existe e o Swift Testing não e
 
 ```bash
 cd client/apple
-make test-kit-unit   # KurzKit/Scripts/swift-test.sh: 59 unitários (URLProtocol e WebSocket falsos); o e2e aparece como SKIPPED
+make test-kit-unit   # KurzKit/Scripts/swift-test.sh: 82 unitários (URLProtocol e WebSocket falsos, reducers puros); os 5 e2e aparecem como SKIPPED
 make test-kit        # KurzKit/Scripts/e2e.sh: builda o servidor Go, sobe Postgres (docker compose, banco descartável), roda TUDO com KURZ_E2E_URL
 ```
 
 Com Xcode, `swift test` puro também funciona. O e2e (`E2ETests.swift`) só roda com `KURZ_E2E_URL=http://localhost:PORTA` apontando para um
-servidor de pé; sem a variável os 4 testes ficam SKIPPED com a razão. O script sobe o servidor com `KURZ_RATELIMIT=off` e voz ligada
+servidor de pé; sem a variável os 5 testes ficam SKIPPED com a razão. O script sobe o servidor com `KURZ_RATELIMIT=off` e voz ligada
 (`KURZ_SECRET` + `KURZ_SFU_URL=ws://localhost:9999/...`, SFU de mentira: só o REST/gateway de voz é exercitado). `KURZ_E2E_NOVOICE=1 make test-kit`
 sobe sem SFU e o teste de voz passa a esperar 501 `not_supported`. Precisa de Docker e Go.
 

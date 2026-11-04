@@ -38,7 +38,7 @@ identidade fixa do `project.yml`; troca `DEVELOPMENT_TEAM`/`CODE_SIGN_IDENTITY` 
 ## Testes
 
 ```bash
-make test-kit-unit   # KurzKit sem Docker: 87 testes (o e2e aparece como SKIPPED)
+make test-kit-unit   # KurzKit sem Docker: 82 unitários (os 5 e2e aparecem como SKIPPED)
 make test-kit        # sobe Postgres + servidor Go reais e roda tudo, incluindo o e2e
 ```
 
