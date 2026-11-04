@@ -44,9 +44,10 @@ type Directory interface {
 // Voice é a parte de voz que o gateway usa (opcional, ligada com WithVoice): o estado atual no `ready`, o heartbeat
 // que mantém o estado de voz vivo e a op `voice.state.set` do cliente.
 type Voice interface {
-	// Snapshot são os `d` de voice.state (connected=true) das guilds do usuário, só de canais que ele vê.
-	Snapshot(ctx context.Context, userID int64) ([]json.RawMessage, error)
-	// Touch renova o heartbeat do estado de voz do usuário.
+	// Snapshot são os `d` de voice.state (connected=true) das guilds do usuário, só de canais que ele vê, e se o próprio
+	// usuário está em voz (mesmo num canal que já não vê).
+	Snapshot(ctx context.Context, userID int64) (states []json.RawMessage, inVoice bool, err error)
+	// Touch renova o heartbeat do estado de voz do usuário. O gateway só chama quando a sessão sabe que há estado de voz.
 	Touch(ctx context.Context, userID int64)
 	// SetState aplica mute/câmera/tela do próprio usuário.
 	SetState(ctx context.Context, userID int64, muted, camOn, sharing bool) error
@@ -62,6 +63,10 @@ type Config struct {
 	WriteTimeout      time.Duration // prazo de cada escrita no socket (5 s)
 	CacheTTL          time.Duration // validade máxima de uma entrada do cache de permissões (30 s); a invalidação por evento é o caminho normal
 	OriginPatterns    []string      // origens de navegador aceitas além do próprio host
+
+	FrameRate          float64 // frames do cliente por segundo por conexão, em regime (10); voice.state.set custa voiceSetCost
+	FrameBurst         float64 // rajada de frames por conexão (20)
+	MaxSessionsPerUser int     // sessões (conectadas ou esperando resume) por usuário (20); acima disso, o identify fecha com 4012
 }
 
 func (c *Config) defaults() {
@@ -75,6 +80,15 @@ func (c *Config) defaults() {
 	set(&c.SessionTTL, 2*time.Minute)
 	set(&c.WriteTimeout, 5*time.Second)
 	set(&c.CacheTTL, 30*time.Second)
+	if c.FrameRate <= 0 {
+		c.FrameRate = 10
+	}
+	if c.FrameBurst <= 0 {
+		c.FrameBurst = 20
+	}
+	if c.MaxSessionsPerUser <= 0 {
+		c.MaxSessionsPerUser = 20
+	}
 	if c.RingSize <= 0 {
 		c.RingSize = 256
 	}
@@ -101,6 +115,7 @@ type Gateway struct {
 	events chan bus.Event
 	cache  *permCache
 
+	rateLimited     atomic.Int64
 	slowDisconnects atomic.Int64
 	delivered       atomic.Int64
 	dropped         atomic.Int64
@@ -126,13 +141,14 @@ type Stats struct {
 	SlowDisconnects int64
 	Delivered       int64 // eventos enfileirados para sessões
 	Dropped         int64 // eventos que estouraram a fila do cliente
+	RateLimited     int64 // conexões fechadas por excesso de frames (4011)
 }
 
 func (g *Gateway) Stats() Stats {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return Stats{Sessions: len(g.sessions), Connections: len(g.conns), SlowDisconnects: g.slowDisconnects.Load(),
-		Delivered: g.delivered.Load(), Dropped: g.dropped.Load()}
+		Delivered: g.delivered.Load(), Dropped: g.dropped.Load(), RateLimited: g.rateLimited.Load()}
 }
 
 // Mount registra GET /v1/gateway.

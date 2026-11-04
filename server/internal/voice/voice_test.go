@@ -25,6 +25,13 @@ func (f fakeChannels) VoiceAccess(_ context.Context, _, ch int64) (Channel, erro
 	return Channel{}, httpx.ErrNotFound
 }
 
+func (f fakeChannels) VisibleChannels(_ context.Context, _, guild int64) (map[int64]bool, error) {
+	if guild != 10 {
+		return nil, nil
+	}
+	return map[int64]bool{100: true, 101: true, 102: true}, nil
+}
+
 func setup(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
 	pool := dbtest.New(t)
@@ -177,11 +184,14 @@ func TestSnapshotAndSetState(t *testing.T) {
 	if err := svc.SetState(ctx, 1, true, true, false); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := svc.Snapshot(ctx, 2) // 2 é membro da guild
-	if err != nil || len(snap) != 1 {
-		t.Fatalf("snapshot = %v %v", snap, err)
+	snap, mine, err := svc.Snapshot(ctx, 2) // 2 é membro da guild, mas não está em voz
+	if err != nil || len(snap) != 1 || mine {
+		t.Fatalf("snapshot = %v mine=%v %v", snap, mine, err)
 	}
-	if out, _ := svc.Snapshot(ctx, 3); len(out) != 0 { // 3 não é membro de nada
+	if _, mine, _ := svc.Snapshot(ctx, 1); !mine { // 1 está em voz
+		t.Fatal("user 1 is in voice")
+	}
+	if out, _, _ := svc.Snapshot(ctx, 3); len(out) != 0 { // 3 não é membro de nada
 		t.Fatalf("outsider snapshot = %v", out)
 	}
 	ps, _ := svc.Participants(ctx, 2, 100)

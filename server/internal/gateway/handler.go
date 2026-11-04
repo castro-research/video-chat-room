@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/coder/websocket"
@@ -50,7 +51,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sess.detach(c)
 	go c.writeLoop(ctx, g.cfg.WriteTimeout, func() { g.slow(c) })
-	g.readLoop(ctx, c, sess.userID)
+	g.readLoop(ctx, c, sess)
 }
 
 func (g *Gateway) fail(c *conn, code websocket.StatusCode, reason string) {
@@ -118,9 +119,10 @@ func (g *Gateway) handshake(ctx context.Context, c *conn) *session {
 // ready o cliente enxerga por REST depois dele; o que vem depois chega como dispatch.
 func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 	s := newSession(uid, g.cfg.RingSize)
-	g.mu.Lock()
-	g.sessions[s.id] = s
-	g.mu.Unlock()
+	if !g.register(s) {
+		g.fail(c, CloseTooManySessions, "too many sessions")
+		return nil
+	}
 
 	gs, err := g.dir.Guilds(ctx, uid)
 	if err != nil {
@@ -138,7 +140,7 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 	}
 	s.mu.Unlock()
 	if g.voice != nil {
-		vs, err := g.voice.Snapshot(ctx, uid)
+		vs, inVoice, err := g.voice.Snapshot(ctx, uid)
 		if err != nil {
 			slog.Error("gateway: load voice state", "user", uid, "err", err)
 			g.drop(s)
@@ -148,6 +150,7 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 		if vs == nil {
 			vs = []json.RawMessage{}
 		}
+		s.voiceSnapshot(inVoice)
 		data.Voice = mustJSON(vs)
 	}
 	ready, _ := json.Marshal(frame{Op: opReady, D: mustJSON(data)})
@@ -157,6 +160,39 @@ func (g *Gateway) identify(ctx context.Context, c *conn, uid int64) *session {
 		return nil
 	}
 	return s
+}
+
+// register guarda a sessão nova respeitando o teto por usuário. Sessões sem conexão (esperando resume) são
+// recolhidas, as mais antigas primeiro, antes de recusar: um cliente que reconecta com identify não se bloqueia
+// por causa das próprias sessões abandonadas.
+func (g *Gateway) register(s *session) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var mine, detached []*session
+	for _, o := range g.sessions {
+		if o.userID != s.userID {
+			continue
+		}
+		mine = append(mine, o)
+		if o.isDetached() {
+			detached = append(detached, o)
+		}
+	}
+	if len(mine) >= g.cfg.MaxSessionsPerUser {
+		sort.Slice(detached, func(i, j int) bool { return detached[i].detachedSince().Before(detached[j].detachedSince()) })
+		for _, o := range detached {
+			if len(mine) < g.cfg.MaxSessionsPerUser {
+				break
+			}
+			delete(g.sessions, o.id)
+			mine = mine[:len(mine)-1]
+		}
+		if len(mine) >= g.cfg.MaxSessionsPerUser {
+			return false
+		}
+	}
+	g.sessions[s.id] = s
+	return true
 }
 
 func (g *Gateway) drop(s *session) {
@@ -183,6 +219,7 @@ func (g *Gateway) resume(c *conn, uid int64, d resumeData) *session {
 	}
 	old := s.conn
 	s.conn = c
+	s.attached = true
 	c.enqueue(resumed)
 	for _, f := range frames {
 		c.enqueue(f)
@@ -195,10 +232,12 @@ func (g *Gateway) resume(c *conn, uid int64, d resumeData) *session {
 }
 
 // readLoop trata heartbeats. Silêncio por mais de 2 intervalos derruba a conexão (a sessão segue viva para resume).
-func (g *Gateway) readLoop(ctx context.Context, c *conn, uid int64) {
+func (g *Gateway) readLoop(ctx context.Context, c *conn, sess *session) {
+	uid := sess.userID
 	ack, _ := json.Marshal(frame{Op: opHeartbeatAck})
 	timer := time.AfterFunc(2*g.cfg.HeartbeatInterval, func() { g.fail(c, CloseHeartbeatTimeout, "heartbeat timeout") })
 	defer timer.Stop()
+	bucket := newFrameBucket(g.cfg.FrameRate, g.cfg.FrameBurst)
 	for {
 		_, data, err := c.ws.Read(ctx)
 		if err != nil {
@@ -210,9 +249,19 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, uid int64) {
 			g.fail(c, CloseBadFrame, "unexpected frame")
 			return
 		}
+		cost := 1.0
+		if f.Op == opVoiceStateSet {
+			cost = voiceSetCost // leitura, transação com advisory lock, upsert e outbox por frame
+		}
+		if !bucket.take(cost) {
+			g.rateLimited.Add(1)
+			g.fail(c, CloseRateLimited, "rate limited")
+			return
+		}
 		switch {
 		case f.Op == opHeartbeat:
-			if g.voice != nil {
+			// só quem tem estado de voz renova no banco; para os demais o heartbeat é só o ack
+			if g.voice != nil && sess.hasVoice() {
 				g.voice.Touch(ctx, uid)
 			}
 		case f.Op == opVoiceStateSet && g.voice != nil:
@@ -220,6 +269,9 @@ func (g *Gateway) readLoop(ctx context.Context, c *conn, uid int64) {
 			if json.Unmarshal(f.D, &d) != nil {
 				g.fail(c, CloseBadFrame, "invalid voice.state.set")
 				return
+			}
+			if !sess.hasVoice() {
+				continue // sem estado de voz não há o que mudar: nem ida ao banco
 			}
 			if err := g.voice.SetState(ctx, uid, d.Muted, d.CamOn, d.Sharing); err != nil && ctx.Err() == nil {
 				slog.Error("gateway: voice.state.set", "user", uid, "err", err)

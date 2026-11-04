@@ -27,7 +27,7 @@ The access token never goes in the URL: the first client frame authenticates.
 
 The client sends `{ "op": "heartbeat" }` every `heartbeatInterval` ms; the server answers `{ "op": "heartbeat_ack" }`.
 No frame from the client for two intervals closes the connection with `4010`. The session survives for resume.
-On a server with `voice`, each heartbeat also renews the sender's voice state: a user in a voice channel whose client sends no
+On a server with `voice`, each heartbeat also renews the sender's voice state (the server only touches storage for users that are in a voice channel): a user in a voice channel whose client sends no
 heartbeat for 3 minutes is removed from it (and everyone who sees the channel gets `voice.state` with `connected: false`).
 
 ## Sequence numbers and resume
@@ -94,6 +94,12 @@ Presence, typing and `voice.speaking` are not implemented yet.
   elsewhere it is an invalid frame, `4002`). No ack: the result is the `voice.state` event, which the sender receives too.
   Without `speak` in the channel, `muted` is forced to `true`. It is ignored if the caller is not in a voice channel.
 
+## Client frame limits
+
+Each connection has a token bucket for client frames (server defaults: 10 frames/s, burst 20; a heartbeat costs 1, `voice.state.set` costs 4).
+Over the limit the server closes with `4011`. A user may hold a bounded number of sessions per server (default 20, live or waiting
+for `resume`; abandoned ones are reclaimed first); beyond that `identify` closes with `4012`. Both limits are per server replica.
+
 ## Slow clients
 
 Each connection has a bounded send queue. A client that stops reading is disconnected (`4008`, or the socket is cut if it
@@ -110,6 +116,8 @@ is not reading at all); other clients are unaffected. Reconnect and `resume`: th
 | 4008 | slow consumer | reconnect, resume |
 | 4009 | the session was resumed by another connection | do not reconnect that session |
 | 4010 | heartbeat timeout | reconnect, resume |
+| 4011 | too many client frames on this connection (token bucket; `voice.state.set` counts as 4 frames) | back off, reconnect, resume |
+| 4012 | too many open sessions for this user on this server | close other sessions/devices; do not retry in a loop |
 
 Reconnect with exponential backoff plus jitter. Several server replicas may serve the same user; a resume must reach the
 replica that holds the session, otherwise the client gets `invalid_session` and refetches.

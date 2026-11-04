@@ -24,6 +24,8 @@ const (
 	CloseSlowConsumer     = 4008 // fila de saída estourou (RNF9): reconecte e faça resume
 	CloseSessionMoved     = 4009 // a sessão foi retomada por outra conexão
 	CloseHeartbeatTimeout = 4010 // silêncio por mais de 2 intervalos: reconecte e faça resume
+	CloseRateLimited      = 4011 // o cliente estourou o limite de frames por conexão: reconecte com calma (backoff) e faça resume
+	CloseTooManySessions  = 4012 // o usuário já tem sessões demais abertas: feche as outras antes de abrir uma nova
 )
 
 type frame struct {
@@ -71,3 +73,6 @@ type voiceStateSetData struct {
 	CamOn   bool `json:"camOn"`
 	Sharing bool `json:"sharing"`
 }
+
+// voiceSetCost é quantos tokens do bucket de frames um voice.state.set gasta (um heartbeat gasta 1).
+const voiceSetCost = 4

@@ -91,3 +91,26 @@ func (c *conn) writeDirect(ctx context.Context, timeout time.Duration, f frame) 
 	defer cancel()
 	return c.ws.Write(wctx, websocket.MessageText, b)
 }
+
+// frameBucket é o token bucket de frames do cliente numa conexão (só o read loop o usa, sem lock).
+type frameBucket struct {
+	tokens, burst, rate float64
+	last                time.Time
+	now                 func() time.Time
+}
+
+func newFrameBucket(rate, burst float64) *frameBucket {
+	return &frameBucket{tokens: burst, burst: burst, rate: rate, last: time.Now(), now: time.Now}
+}
+
+// take gasta cost tokens; false = estourou o limite.
+func (b *frameBucket) take(cost float64) bool {
+	t := b.now()
+	b.tokens = min(b.burst, b.tokens+t.Sub(b.last).Seconds()*b.rate)
+	b.last = t
+	if b.tokens < cost {
+		return false
+	}
+	b.tokens -= cost
+	return true
+}

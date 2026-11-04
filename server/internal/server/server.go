@@ -129,7 +129,7 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	voiceSvc.RegisterJobs(worker)
 
 	evBus := bus.NewPostgres(pool, gen, bus.Options{})
-	gw := gateway.New(gateway.Config{}, gateway.AuthFunc(tokens.Parse), gatewayDirectory{guilds: guildSvc, channels: chSvc}, evBus)
+	gw := gateway.New(gateway.Config{FrameRate: cfg.WS.FrameRate, FrameBurst: cfg.WS.FrameBurst, MaxSessionsPerUser: cfg.WS.MaxSessionsPerUser}, gateway.AuthFunc(tokens.Parse), gatewayDirectory{guilds: guildSvc, channels: chSvc}, evBus)
 	if voiceSvc.Enabled() {
 		gw.WithVoice(gatewayVoice{voiceSvc})
 	}
@@ -268,10 +268,22 @@ func (v voiceChannels) VoiceAccess(ctx context.Context, userID, channelID int64)
 		Connect: p.Has(permissions.Connect), Speak: p.Has(permissions.Speak)}, nil
 }
 
+func (v voiceChannels) VisibleChannels(ctx context.Context, userID, guildID int64) (map[int64]bool, error) {
+	cs, err := v.ch.List(ctx, userID, guildID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[int64]bool, len(cs))
+	for _, c := range cs {
+		out[c.ID] = true
+	}
+	return out, nil
+}
+
 // gatewayVoice adapta voice.Service à interface Voice do gateway.
 type gatewayVoice struct{ v *voice.Service }
 
-func (g gatewayVoice) Snapshot(ctx context.Context, userID int64) ([]json.RawMessage, error) {
+func (g gatewayVoice) Snapshot(ctx context.Context, userID int64) ([]json.RawMessage, bool, error) {
 	return g.v.Snapshot(ctx, userID)
 }
 func (g gatewayVoice) Touch(ctx context.Context, userID int64) { g.v.Touch(ctx, userID) }

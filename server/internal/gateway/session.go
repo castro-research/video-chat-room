@@ -25,6 +25,9 @@ type session struct {
 	ringStart  int         // posição do mais antigo
 	ringLen    int
 	conn       *conn
+	inVoice    bool // o usuário tem linha em voice_states (decide se o heartbeat vai ao banco)
+	voiceSeen  bool // um voice.state do próprio usuário já foi aplicado: vale mais que o snapshot do identify
+	attached   bool // já teve conexão alguma vez (uma sessão em montagem não é "abandonada")
 	detachedAt time.Time
 }
 
@@ -106,6 +109,7 @@ func (s *session) attach(c *conn, first []byte) (old *conn, ok bool) {
 	}
 	old = s.conn
 	s.conn = c
+	s.attached = true
 	c.enqueue(first)
 	for _, f := range frames {
 		c.enqueue(f)
@@ -120,6 +124,40 @@ func (s *session) detach(c *conn) {
 		s.detachedAt = time.Now()
 	}
 	s.mu.Unlock()
+}
+
+// voiceEvent aplica um voice.state do próprio usuário (connected = entrou/está em voz).
+func (s *session) voiceEvent(connected bool) {
+	s.mu.Lock()
+	s.inVoice, s.voiceSeen = connected, true
+	s.mu.Unlock()
+}
+
+// voiceSnapshot aplica o estado lido no identify, a menos que um evento mais novo já tenha chegado.
+func (s *session) voiceSnapshot(inVoice bool) {
+	s.mu.Lock()
+	if !s.voiceSeen {
+		s.inVoice = inVoice
+	}
+	s.mu.Unlock()
+}
+
+func (s *session) hasVoice() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inVoice
+}
+
+func (s *session) isDetached() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn == nil && s.attached
+}
+
+func (s *session) detachedSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detachedAt
 }
 
 func (s *session) expired(now time.Time, ttl time.Duration) bool {

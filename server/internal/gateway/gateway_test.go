@@ -778,3 +778,164 @@ func TestAttachDoesNotLoseEventsDeliveredBeforeIt(t *testing.T) {
 		}
 	}
 }
+
+// Frames demais numa conexão: fecha com 4011. A reposição é desprezível (1e-6/s), então o teste não depende de relógio.
+func TestFrameFloodClosesWithRateLimited(t *testing.T) {
+	pool := dbtest.New(t)
+	e := newEnv(t, pool, 1, Config{FrameRate: 0.000001, FrameBurst: 3}, standardDir())
+	c, _ := open(t, e, alice)
+	for range 3 {
+		c.send(opHeartbeat, nil)
+		c.expect(opHeartbeatAck)
+	}
+	c.send(opHeartbeat, nil)
+	if code := c.closeCode(); code != CloseRateLimited {
+		t.Fatalf("close code = %d", code)
+	}
+	if e.gw.Stats().RateLimited != 1 {
+		t.Fatalf("stats = %+v", e.gw.Stats())
+	}
+	// outro usuário/conexão não é afetado
+	c2, _ := open(t, e, bob)
+	c2.send(opHeartbeat, nil)
+	c2.expect(opHeartbeatAck)
+}
+
+// voice.state.set custa mais que um heartbeat: com burst 5 cabe 1 (custo 4) e o seguinte estoura.
+func TestVoiceStateSetCostsMoreThanHeartbeat(t *testing.T) {
+	pool := dbtest.New(t)
+	fv := &fakeVoice{}
+	e := newEnv(t, pool, 1, Config{FrameRate: 0.000001, FrameBurst: 5}, standardDir())
+	e.gw.WithVoice(fv)
+	c, _ := open(t, e, alice)
+	c.send(opVoiceStateSet, voiceStateSetData{Muted: true})
+	c.send(opVoiceStateSet, voiceStateSetData{Muted: false})
+	if code := c.closeCode(); code != CloseRateLimited {
+		t.Fatalf("close code = %d", code)
+	}
+}
+
+func TestMaxSessionsPerUser(t *testing.T) {
+	pool := dbtest.New(t)
+	e := newEnv(t, pool, 1, Config{MaxSessionsPerUser: 2}, standardDir())
+	c1, _ := open(t, e, alice)
+	c2, _ := open(t, e, alice)
+	// terceira conexão ao vivo do mesmo usuário: recusada
+	c3 := dial(t, e.url())
+	c3.expect(opHello)
+	c3.send(opIdentify, identifyData{Token: "tok-1"})
+	if code := c3.closeCode(); code != CloseTooManySessions {
+		t.Fatalf("close code = %d", code)
+	}
+	// outro usuário tem a própria cota
+	cb, _ := open(t, e, bob)
+	cb.send(opHeartbeat, nil)
+	cb.expect(opHeartbeatAck)
+
+	// sessões abandonadas (sem conexão) são recolhidas para dar lugar a uma nova
+	c1.ws.CloseNow()
+	waitFor(t, func() bool {
+		e.gw.mu.RLock()
+		defer e.gw.mu.RUnlock()
+		for _, s := range e.gw.sessions {
+			if s.userID == alice && s.isDetached() {
+				return true
+			}
+		}
+		return false
+	})
+	c4, _ := open(t, e, alice)
+	c4.send(opHeartbeat, nil)
+	c4.expect(opHeartbeatAck)
+	c2.send(opHeartbeat, nil)
+	c2.expect(opHeartbeatAck) // a viva não foi tocada
+}
+
+// fakeVoice conta as chamadas que o gateway faz à voz.
+type fakeVoice struct {
+	touches   atomic.Int64
+	sets      atomic.Int64
+	inVoice   bool
+	snapshots atomic.Int64
+}
+
+func (f *fakeVoice) Snapshot(context.Context, int64) ([]json.RawMessage, bool, error) {
+	f.snapshots.Add(1)
+	return nil, f.inVoice, nil
+}
+func (f *fakeVoice) Touch(context.Context, int64) { f.touches.Add(1) }
+func (f *fakeVoice) SetState(context.Context, int64, bool, bool, bool) error {
+	f.sets.Add(1)
+	return nil
+}
+
+func voiceStatePayload(user string, connected bool) map[string]any {
+	return map[string]any{"channelId": "2000", "connected": connected, "participant": map[string]any{"user": map[string]any{"id": user}}}
+}
+
+// Quem não está em voz não gera Touch (UPDATE no banco) a cada heartbeat; ao entrar passa a gerar, ao sair para.
+// O Touch roda antes do ack, então contar depois de receber o ack é determinístico.
+func TestHeartbeatTouchesVoiceOnlyWhenInVoice(t *testing.T) {
+	pool := dbtest.New(t)
+	fv := &fakeVoice{}
+	e := newEnv(t, pool, 1, Config{}, standardDir())
+	e.gw.WithVoice(fv)
+	listening(t, pool, 1)
+	c, _ := open(t, e, alice)
+	beat := func() { c.send(opHeartbeat, nil); c.expect(opHeartbeatAck) }
+
+	for range 5 {
+		beat()
+	}
+	if n := fv.touches.Load(); n != 0 {
+		t.Fatalf("user outside voice caused %d touches", n)
+	}
+	c.send(opVoiceStateSet, voiceStateSetData{Muted: true}) // também não vai à voz
+	beat()
+	if n := fv.sets.Load(); n != 0 {
+		t.Fatalf("voice.state.set without voice state reached the service: %d", n)
+	}
+
+	// entra em voz (o evento chega ao gateway e liga a flag antes de ser entregue)
+	e.publish(t, bus.VoiceState, guildA, channelX, voiceStatePayload("1", true))
+	c.dispatch(bus.VoiceState)
+	beat()
+	beat()
+	if n := fv.touches.Load(); n != 2 {
+		t.Fatalf("touches in voice = %d, want 2", n)
+	}
+	c.send(opVoiceStateSet, voiceStateSetData{Muted: true})
+	beat()
+	if n := fv.sets.Load(); n != 1 {
+		t.Fatalf("sets = %d", n)
+	}
+
+	// sai: o estado de outra pessoa não conta; o próprio desliga a flag
+	e.publish(t, bus.VoiceState, guildA, channelX, voiceStatePayload("2", false))
+	c.dispatch(bus.VoiceState)
+	beat()
+	if n := fv.touches.Load(); n != 4 { // 2 + o beat depois do set + este
+		t.Fatalf("someone else's leave must not stop alice's heartbeats: %d", n)
+	}
+	e.publish(t, bus.VoiceState, guildA, channelX, voiceStatePayload("1", false))
+	c.dispatch(bus.VoiceState)
+	beat()
+	beat()
+	if n := fv.touches.Load(); n != 4 {
+		t.Fatalf("touches after leaving = %d, want 4", n)
+	}
+}
+
+// A flag do identify vem do snapshot (quem já estava em voz continua sendo tocado, mesmo sem evento novo).
+func TestIdentifyInVoiceFlagComesFromSnapshot(t *testing.T) {
+	pool := dbtest.New(t)
+	fv := &fakeVoice{inVoice: true}
+	e := newEnv(t, pool, 1, Config{}, standardDir())
+	e.gw.WithVoice(fv)
+	c, _ := open(t, e, alice)
+	c.send(opHeartbeat, nil)
+	c.expect(opHeartbeatAck)
+	if n := fv.touches.Load(); n != 1 {
+		t.Fatalf("touches = %d, want 1", n)
+	}
+}

@@ -38,6 +38,8 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 | `KURZ_RATELIMIT` | `on` | `off` desliga o rate limit (use no loadtest) |
 | `KURZ_RATELIMIT_AUTH_BURST` / `KURZ_RATELIMIT_AUTH_PER_MIN` | `20` / `20` | token bucket **por IP** em `POST /v1/auth/*`: rajada e reposição por minuto |
 | `KURZ_RATELIMIT_WRITE_BURST` / `KURZ_RATELIMIT_WRITE_PER_SEC` | `60` / `20` | token bucket **por usuário** nas demais escritas (POST/PUT/PATCH/DELETE; sem token válido, por IP) |
+| `KURZ_WS_FRAME_RATE` / `KURZ_WS_FRAME_BURST` | `10` / `20` | token bucket **por conexão WebSocket** para frames do cliente (heartbeat custa 1, `voice.state.set` custa 4). Estourou: fecha com `4011` |
+| `KURZ_WS_MAX_SESSIONS_PER_USER` | `20` | teto de sessões do gateway por usuário e réplica (ao vivo ou esperando resume; as abandonadas são recolhidas antes de recusar). Acima: `4012` |
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
 | `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 

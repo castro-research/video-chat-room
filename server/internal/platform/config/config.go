@@ -21,6 +21,7 @@ type Config struct {
 	S3           S3
 	Voice        Voice
 	RateLimit    RateLimit
+	WS           WebSocket
 	TrustedProxy bool   // KURZ_TRUSTED_PROXY: confia no X-Forwarded-For (só atrás de um proxy que o sobrescreve)
 	OtelEndpoint string // KURZ_OTEL_ENDPOINT: URL OTLP/HTTP do coletor (ex.: http://otel:4318); vazio desliga os traces
 }
@@ -33,6 +34,13 @@ type RateLimit struct {
 	AuthPerMin  float64 // KURZ_RATELIMIT_AUTH_PER_MIN: reposição por IP, tokens/minuto (padrão 20)
 	WriteBurst  float64 // KURZ_RATELIMIT_WRITE_BURST: rajada por usuário nas escritas (padrão 60)
 	WritePerSec float64 // KURZ_RATELIMIT_WRITE_PER_SEC: reposição por usuário, tokens/s (padrão 20)
+}
+
+// WebSocket limita o gateway. Zero = padrão do gateway (frame 10/s, rajada 20, 20 sessões por usuário).
+type WebSocket struct {
+	FrameRate          float64 // KURZ_WS_FRAME_RATE: frames do cliente por segundo por conexão (voice.state.set custa 4)
+	FrameBurst         float64 // KURZ_WS_FRAME_BURST: rajada de frames por conexão
+	MaxSessionsPerUser int     // KURZ_WS_MAX_SESSIONS_PER_USER: sessões (ao vivo ou esperando resume) por usuário e réplica
 }
 
 // Voice configura a voz. É opcional: sem Secret e SFUURL ela fica desligada (Enabled() == false), os endpoints de voz
@@ -112,6 +120,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if err := loadRateLimit(&c, getenv); err != nil {
 		return Config{}, err
 	}
+	if err := loadWS(&c, getenv); err != nil {
+		return Config{}, err
+	}
 	if err := loadVoice(&c, getenv); err != nil {
 		return Config{}, err
 	}
@@ -156,6 +167,29 @@ func loadRateLimit(c *Config, getenv func(string) string) error {
 		}
 	}
 	c.RateLimit = rl
+	return nil
+}
+
+func loadWS(c *Config, getenv func(string) string) error {
+	for _, f := range []struct {
+		env string
+		dst *float64
+	}{{"KURZ_WS_FRAME_RATE", &c.WS.FrameRate}, {"KURZ_WS_FRAME_BURST", &c.WS.FrameBurst}} {
+		if v := getenv(f.env); v != "" {
+			n, err := strconv.ParseFloat(v, 64)
+			if err != nil || n <= 0 {
+				return fmt.Errorf("%s must be a positive number", f.env)
+			}
+			*f.dst = n
+		}
+	}
+	if v := getenv("KURZ_WS_MAX_SESSIONS_PER_USER"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("KURZ_WS_MAX_SESSIONS_PER_USER must be a positive integer")
+		}
+		c.WS.MaxSessionsPerUser = n
+	}
 	return nil
 }
 

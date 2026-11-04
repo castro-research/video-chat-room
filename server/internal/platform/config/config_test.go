@@ -154,3 +154,23 @@ func TestRateLimitConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestWebSocketLimitsConfig(t *testing.T) {
+	c, err := Load(env(valid()))
+	if err != nil || c.WS != (WebSocket{}) {
+		t.Fatalf("defaults (zero = gateway default): %+v %v", c.WS, err)
+	}
+	m := valid()
+	m["KURZ_WS_FRAME_RATE"], m["KURZ_WS_FRAME_BURST"], m["KURZ_WS_MAX_SESSIONS_PER_USER"] = "5", "8", "3"
+	c, err = Load(env(m))
+	if err != nil || c.WS != (WebSocket{FrameRate: 5, FrameBurst: 8, MaxSessionsPerUser: 3}) {
+		t.Fatalf("overrides: %+v %v", c.WS, err)
+	}
+	for k, v := range map[string]string{"KURZ_WS_FRAME_RATE": "0", "KURZ_WS_FRAME_BURST": "x", "KURZ_WS_MAX_SESSIONS_PER_USER": "-2"} {
+		m := valid()
+		m[k] = v
+		if _, err := Load(env(m)); err == nil {
+			t.Fatalf("%s=%s should fail", k, v)
+		}
+	}
+}

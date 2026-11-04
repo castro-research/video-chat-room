@@ -29,6 +29,8 @@ type Channel struct {
 // Channels responde sobre canais. VoiceAccess devolve 404 (httpx.ErrNotFound) se o usuário não vê o canal.
 type Channels interface {
 	VoiceAccess(ctx context.Context, userID, channelID int64) (Channel, error)
+	// VisibleChannels devolve os ids dos canais da guild em que o usuário tem ViewChannel, numa consulta agregada por guild.
+	VisibleChannels(ctx context.Context, userID, guildID int64) (map[int64]bool, error)
 }
 
 type ICEServer struct {
@@ -321,31 +323,38 @@ func (s *Service) Sweep(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// Snapshot são os voice.state (connected=true) atuais das guilds do usuário, só dos canais que ele vê. Vai no `ready`.
-func (s *Service) Snapshot(ctx context.Context, user int64) ([]json.RawMessage, error) {
+// Snapshot são os voice.state (connected=true) atuais das guilds do usuário, só dos canais que ele vê, e se o próprio
+// usuário está em voz (mesmo num canal que já não vê). Vai no `ready`. Custa uma consulta aos estados e uma lista de
+// canais visíveis por guild que tenha alguém em voz (antes eram três consultas por canal de voz).
+func (s *Service) Snapshot(ctx context.Context, user int64) (states []json.RawMessage, inVoice bool, err error) {
 	rs, err := guildRows(ctx, s.pool, user)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	visible := map[int64]bool{}
+	visible := map[int64]map[int64]bool{} // guild -> canais visíveis
 	out := []json.RawMessage{}
 	for _, r := range rs {
-		ok, seen := visible[r.ChannelID]
-		if !seen {
-			_, err := s.ch.VoiceAccess(ctx, user, r.ChannelID)
-			ok = err == nil // 404 (não vê) e demais erros: não entrega
-			visible[r.ChannelID] = ok
+		if r.UserID == user {
+			inVoice = true
 		}
-		if !ok {
+		vis, seen := visible[r.GuildID]
+		if !seen {
+			vis, err = s.ch.VisibleChannels(ctx, user, r.GuildID)
+			if err != nil {
+				vis = nil // na dúvida, não entrega os estados dessa guild
+			}
+			visible[r.GuildID] = vis
+		}
+		if !vis[r.ChannelID] {
 			continue
 		}
 		b, err := json.Marshal(statePayload(r, true))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, b)
 	}
-	return out, nil
+	return out, inVoice, nil
 }
 
 // Run liga a limpeza reativa (member.leave do bus) até ctx terminar. O handler do bus só enfileira; o trabalho

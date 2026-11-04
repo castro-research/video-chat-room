@@ -78,6 +78,27 @@ func (g *Gateway) route(ctx context.Context, e bus.Event) {
 		}
 	}
 
+	// O estado de voz do próprio usuário (para o heartbeat saber se há o que renovar) segue o evento, com ou sem ViewChannel.
+	if e.Type == bus.VoiceState {
+		var vm struct {
+			Connected   bool `json:"connected"`
+			Participant struct {
+				User struct {
+					ID string `json:"id"`
+				} `json:"user"`
+			} `json:"participant"`
+		}
+		if json.Unmarshal(e.Payload, &vm) == nil {
+			if uid, err := ids.Parse(vm.Participant.User.ID); err == nil {
+				for _, s := range sessions {
+					if s.userID == uid {
+						s.voiceEvent(vm.Connected)
+					}
+				}
+			}
+		}
+	}
+
 	// message.create: o nonce volta só ao autor.
 	full, stripped := e.Payload, e.Payload
 	var authorID int64
