@@ -15,12 +15,12 @@ final class ScreenCapture: NSObject, RTCDesktopCapturerDelegate {
     /// Abre a captura de [desktop] com [quality]; a anterior (se houver) fica a correr até [stop] — ver [Opened].
     func open(_ desktop: RTCDesktopSource, quality: ScreenQuality) -> Opened {
         let src = MediaEngine.shared.factory.videoSource(forScreenCast: true)
-        // o limite é uma caixa larga (32:9) para a altura mandar também nos ecrãs ultra-largos; Fonte = caixa de 8K (não reduz nada)
+        // Fonte = caixa de 8K (não reduz nada)
         let h = quality.resolution == .source ? 4320 : quality.resolution.rawValue
-        src.adaptOutputFormat(toWidth: Int32(h * 32 / 9), height: Int32(h), fps: Int32(quality.fps))
-        let cap = RTCDesktopCapturer(source: desktop, delegate: self, capture: src)
+        let fitter = Fitter(source: src, maxHeight: h, fps: quality.fps)
+        let cap = RTCDesktopCapturer(source: desktop, delegate: self, capture: fitter)
         cap.startCapture(withFPS: quality.fps)
-        return Opened(source: src, capturer: cap, track: MediaEngine.shared.factory.videoTrack(with: src, trackId: "screen"))
+        return Opened(source: src, capturer: cap, track: MediaEngine.shared.factory.videoTrack(with: src, trackId: "screen"), fitter: fitter)
     }
 
     /// Uma captura aberta e ainda não adoptada.
@@ -28,19 +28,46 @@ final class ScreenCapture: NSObject, RTCDesktopCapturerDelegate {
         let source: RTCVideoSource
         let capturer: RTCDesktopCapturer
         let track: RTCVideoTrack
+        let fitter: Fitter
     }
 
     /// Passa a ser esta a captura activa e pára a anterior.
     func adopt(_ o: Opened) {
         let old = capturer
-        source = o.source; capturer = o.capturer; track = o.track
+        source = o.source; capturer = o.capturer; track = o.track; fitter = o.fitter
         old?.stopCapture()
     }
 
     func stop() {
         let c = capturer
-        capturer = nil; source = nil; track = nil
+        capturer = nil; source = nil; track = nil; fitter = nil
         c?.stopCapture()
+    }
+
+    private var fitter: Fitter?
+
+    /// Repassa os quadros ao source e, quando o tamanho capturado muda (outra janela, ecrã redimensionado), refaz o pedido de
+    /// formato com a proporção do próprio quadro, limitado em altura (e a 32:9 de largura) e sem ampliar. O `adaptOutputFormat`
+    /// do WebRTC CORTA o quadro para a proporção pedida: uma caixa fixa (ex.: 32:9) deixava só uma tira do ecrã.
+    final class Fitter: NSObject, RTCVideoCapturerDelegate {
+        private let source: RTCVideoSource
+        private let maxHeight: Int
+        private let fps: Int
+        private var size = (w: 0, h: 0)  // só na thread de captura
+
+        init(source: RTCVideoSource, maxHeight: Int, fps: Int) {
+            self.source = source; self.maxHeight = maxHeight; self.fps = fps
+        }
+
+        func capturer(_ capturer: RTCVideoCapturer, didCapture frame: RTCVideoFrame) {
+            let w = Int(frame.width), h = Int(frame.height)
+            if w > 0, h > 0, (w, h) != size {
+                size = (w, h)
+                let s = min(1.0, Double(maxHeight) / Double(h), Double(maxHeight * 32 / 9) / Double(w))
+                source.adaptOutputFormat(toWidth: Int32((Double(w) * s).rounded()), height: Int32((Double(h) * s).rounded()), fps: Int32(fps))
+            }
+            source.capturer(capturer, didCapture: frame)
+        }
     }
 
     func didSourceCaptureStart(_ capturer: RTCDesktopCapturer) {}

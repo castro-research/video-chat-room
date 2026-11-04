@@ -261,9 +261,10 @@ func TestAttachmentValidationAndPermissions(t *testing.T) {
 		// texto vazio sem anexo continua inválido
 		alice.fail("POST", "/v1/channels/"+ch+"/messages", 422, "validation", map[string]any{"text": ""})
 
-		// tamanho enviado diferente do declarado
+		// tamanho enviado diferente do declarado: o Content-Length vai assinado, então o próprio PUT é recusado
+		// e o anexo continua "não enviado"
 		bad := requestUpload(alice, ch, "b.png", "image/png", 3)
-		putObject(t, bad["uploadUrl"].(string), []byte("abcdef"), 200)
+		putObject(t, bad["uploadUrl"].(string), []byte("abcdef"), 403)
 		alice.fail("POST", "/v1/channels/"+ch+"/messages", 422, "validation", map[string]any{"text": "x", "attachmentIds": []string{bad["id"].(string)}})
 
 		// nada disso criou mensagem
@@ -287,8 +288,9 @@ func TestAttachmentOverwriteAfterBindDoesNotChangeServedBytes(t *testing.T) {
 		m := alice.do("POST", "/v1/channels/"+ch+"/messages", 201, map[string]any{"attachmentIds": []string{up["id"].(string)}})
 		url := m["attachments"].([]any)[0].(map[string]any)["url"].(string)
 
-		// o atacante ainda tem a URL PUT: sobrescreve com algo maior e diferente
-		putObject(t, up["uploadUrl"].(string), bytes.Repeat([]byte("X"), 4096), 200)
+		// o atacante ainda tem a URL PUT: maior que o declarado é recusado, mas do mesmo tamanho e diferente ele consegue
+		putObject(t, up["uploadUrl"].(string), bytes.Repeat([]byte("X"), 4096), 403)
+		putObject(t, up["uploadUrl"].(string), bytes.Repeat([]byte("X"), len(good)), 200)
 
 		if code, body, _ := getObject(t, url); code != 200 || !bytes.Equal(body, good) {
 			t.Fatalf("served bytes changed after overwrite: %d %q", code, body)
@@ -299,9 +301,9 @@ func TestAttachmentOverwriteAfterBindDoesNotChangeServedBytes(t *testing.T) {
 			t.Fatalf("listed bytes changed after overwrite: %d %q", code, body)
 		}
 
-		// sobrescrever ANTES do bind com tamanho diferente continua sendo recusado
+		// enviar ANTES do bind com tamanho diferente é recusado no PUT, e o bind recusa o anexo que nunca chegou
 		up2 := requestUpload(alice, ch, "b.png", "image/png", 3)
-		putObject(t, up2["uploadUrl"].(string), []byte("abcdef"), 200)
+		putObject(t, up2["uploadUrl"].(string), []byte("abcdef"), 403)
 		alice.fail("POST", "/v1/channels/"+ch+"/messages", 422, "validation", map[string]any{"attachmentIds": []string{up2["id"].(string)}})
 	})
 }
