@@ -5,9 +5,12 @@ import KurzKit
 /// `/.well-known/kurz`: o ligado sempre, os outros só enquanto a lista está aberta.
 @MainActor
 final class ServerList: ObservableObject {
-    /// Servidor local de desenvolvimento (`make db-up` + `go run ./cmd/kurz` em server/). O cord.kurz.fyi fala o contrato antigo.
+    /// Servidor de fábrica. Debug: o local de desenvolvimento (`make db-up` + `go run ./cmd/kurz` em server/). Release: o cord.kurz.fyi.
+    #if DEBUG
     static let factory = "http://localhost:8080"
-    private static let legacy = "https://cord.kurz.fyi"
+    #else
+    static let factory = "https://cord.kurz.fyi"
+    #endif
 
     @Published private(set) var servers: [String]
     @Published private(set) var selected: String
@@ -20,7 +23,7 @@ final class ServerList: ObservableObject {
     private var checks: Task<Void, Never>?
 
     init() {
-        let added = (defaults.stringArray(forKey: "servers") ?? []).filter { $0 != Self.factory && $0 != Self.legacy }
+        let added = (defaults.stringArray(forKey: "servers") ?? []).filter { $0 != Self.factory }
         let all = [Self.factory] + added
         servers = all
         selected = defaults.string(forKey: "server").flatMap { all.contains($0) ? $0 : nil } ?? Self.factory
