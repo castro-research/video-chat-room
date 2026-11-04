@@ -16,7 +16,11 @@ enum Fx {
         return decode(#"{"id":"\#(id)","guildId":"\#(guild)","name":"\#(name)","kind":"\#(kind)","position":\#(pos)\#(p)}"#)
     }
     static func guild(_ id: String, _ name: String = "G") -> Guild { decode(#"{"id":"\#(id)","name":"\#(name)","ownerId":"1","createdAt":"2026-11-01T12:00:00Z"}"#) }
-    static func member(_ id: String) -> Member { decode(#"{"user":\#(user(id)),"joinedAt":"2026-11-01T12:00:00Z","roleIds":[]}"#) }
+    static func member(_ id: String, roles: [String] = []) -> Member {
+        let r = roles.map { #""\#($0)""# }.joined(separator: ",")
+        return decode(#"{"user":\#(user(id)),"joinedAt":"2026-11-01T12:00:00Z","roleIds":[\#(r)]}"#)
+    }
+    static func role(_ id: String, everyone: Bool = false) -> Role { Role(id: id, name: "x", permissions: [], position: 1, everyone: everyone) }
     static func page(_ ms: [Message], more: Bool = false) -> MessagePage { MessagePage(items: ms, hasMore: more, hasNewer: false) }
     static func part(_ id: String, muted: Bool = false) -> VoiceParticipant { decode(#"{"user":\#(user(id)),"muted":\#(muted),"camOn":false,"sharing":false}"#) }
     static func vstate(_ ch: String, _ uid: String, connected: Bool = true, muted: Bool = false) -> VoiceState {
@@ -227,7 +231,7 @@ struct WorkspaceTests {
         #expect(w.members["g2"] == nil)
         w.apply(.memberLeave(MemberLeaveEvent(guildId: "g1", userId: "5", reason: "leave")))
         #expect(w.members["g1"]?.map(\.id) == ["1"])
-        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Role(id: "r", name: "x", permissions: [], position: 1, everyone: false)))) == [.guild("g1")])
+        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Fx.role("r")))).isEmpty) // não tenho este cargo
         w.apply(.guildUpdate(Fx.guild("g1", "Novo")))
         #expect(w.guild("g1")?.name == "Novo")
         // eu saí / fui banido: a guild some com tudo dentro
@@ -250,5 +254,91 @@ struct WorkspaceTests {
         #expect(w.voice.participants(in: "v1").count == 1)
         w.apply(.memberLeave(MemberLeaveEvent(guildId: "g1", userId: "2", reason: "kick")))
         #expect(w.voice.participants(in: "v1").isEmpty)
+    }
+}
+
+@Suite("Reducers: membros e cargos sem refetch desnecessário")
+struct MemberRefetchTests {
+    func ready() -> Workspace {
+        var w = Workspace(meId: "1")
+        w.setGuilds([Fx.guild("g1")])
+        w.setMembers([Fx.member("1", roles: ["mine"]), Fx.member("2")], guildId: "g1")
+        return w
+    }
+
+    @Test func memberUpdateDeOutroAplicaLocalSemRefetch() {
+        var w = ready()
+        let out = w.apply(.memberUpdate(MemberEvent(guildId: "g1", userId: "2", member: Fx.member("2", roles: ["r9"]))))
+        #expect(out.isEmpty)
+        #expect(w.member("2", in: "g1")?.roleIds == ["r9"])
+        #expect(w.members["g1"]?.count == 2)
+    }
+
+    @Test func memberUpdateDeOutroDeMembroNovoFazUpsert() {
+        var w = ready()
+        #expect(w.apply(.memberUpdate(MemberEvent(guildId: "g1", userId: "7", member: Fx.member("7")))).isEmpty)
+        #expect(w.members["g1"]?.map(\.id) == ["1", "2", "7"])
+        // lista não carregada: nada a aplicar, nem a reler
+        #expect(w.apply(.memberUpdate(MemberEvent(guildId: "g9", userId: "7", member: Fx.member("7")))).isEmpty)
+        #expect(w.members["g9"] == nil)
+    }
+
+    @Test func memberUpdateDoProprioPedeRefetchEAtualizaMeusCargos() {
+        var w = ready()
+        let out = w.apply(.memberUpdate(MemberEvent(guildId: "g1", userId: "1", member: Fx.member("1", roles: ["a", "b"]))))
+        #expect(out == [.guild("g1")])
+        #expect(w.myRoles["g1"] == ["a", "b"])
+        #expect(w.member("1", in: "g1")?.roleIds == ["a", "b"])
+    }
+
+    @Test func cargoAlheioNaoPedeRefetchMasMeuPede() {
+        var w = ready()
+        #expect(w.apply(.roleCreate(RoleEvent(guildId: "g1", role: Fx.role("novo")))).isEmpty)
+        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Fx.role("other")))).isEmpty)
+        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Fx.role("mine")))) == [.guild("g1")])
+        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Fx.role("ev", everyone: true)))) == [.guild("g1")])
+    }
+
+    @Test func cargoApagadoSaiDosMembrosEPedeRefetchSoSeEraMeu() {
+        var w = ready()
+        w.apply(.memberUpdate(MemberEvent(guildId: "g1", userId: "2", member: Fx.member("2", roles: ["other", "keep"]))))
+        #expect(w.apply(.roleDelete(RoleDeleteEvent(guildId: "g1", roleId: "other"))).isEmpty)
+        #expect(w.member("2", in: "g1")?.roleIds == ["keep"])
+        #expect(w.apply(.roleDelete(RoleDeleteEvent(guildId: "g1", roleId: "mine"))) == [.guild("g1")])
+        #expect(w.member("1", in: "g1")?.roleIds.isEmpty == true && w.myRoles["g1"]?.isEmpty == true)
+    }
+
+    @Test func semSaberMeusCargosSeAssumeQueAfeta() {
+        var w = Workspace(meId: "1")
+        w.setGuilds([Fx.guild("g1")])
+        #expect(w.apply(.roleUpdate(RoleEvent(guildId: "g1", role: Fx.role("x")))) == [.guild("g1")])
+    }
+
+    @Test func portaoDeCargaDeduplica() {
+        var g = LoadGate()
+        let first = g.begin("g1")
+        let dup = g.begin("g1")                  // em voo: o segundo pedido não carrega
+        let other = g.begin("g2")                // outra guild é independente
+        let forcedWhileLoading = g.begin("g1", force: true) // nem a releitura se sobrepõe
+        #expect(first && !dup && other && !forcedWhileLoading)
+        g.finish("g1")
+        let alreadyLoaded = g.begin("g1", loaded: true)
+        let reload = g.begin("g1", loaded: true, force: true) // releitura explícita
+        #expect(!alreadyLoaded && reload && g.isLoading("g1"))
+    }
+
+    @Test func ecoDeReacaoDoProprioNaoContaEmDobro() {
+        var l = MessageList()
+        l.upsert(Fx.message("1"))
+        // gateway antes do REST
+        l.addReaction(Fx.reaction("1", "2"), me: "2"); l.addReaction(Fx.reaction("1", "2"), me: "2")
+        #expect(l.messages[0].reactions == [Reaction(emoji: "👍", count: 1, me: true)])
+        // remover: o eco e o REST local chegam em qualquer ordem
+        l.removeReaction(Fx.reaction("1", "2"), me: "2"); l.removeReaction(Fx.reaction("1", "2"), me: "2")
+        #expect(l.messages[0].reactions.isEmpty)
+        // a de outro, com outra do próprio já presente, continua a somar
+        l.addReaction(Fx.reaction("1", "2"), me: "2"); l.addReaction(Fx.reaction("1", "7"), me: "2")
+        l.removeReaction(Fx.reaction("1", "2"), me: "2"); l.removeReaction(Fx.reaction("1", "2"), me: "2")
+        #expect(l.messages[0].reactions == [Reaction(emoji: "👍", count: 1, me: false)])
     }
 }

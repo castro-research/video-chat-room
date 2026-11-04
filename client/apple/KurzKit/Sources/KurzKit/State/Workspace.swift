@@ -4,8 +4,26 @@ import Foundation
 public enum Refetch: Hashable, Sendable {
     /// `ready` ou `invalid_session`: refaça tudo (guilds, canais, não-lidos, voz, e o que está aberto).
     case everything
-    /// Canais, não-lidos e (se já carregados) membros desta guild: mudaram permissões, cargos ou a ordem dos canais.
+    /// Canais e não-lidos desta guild: mudaram as minhas permissões, os meus cargos ou a ordem dos canais. (Os membros não se relêem:
+    /// os eventos `member.*` já os trazem.)
     case guild(String)
+}
+
+/// Evita cargas repetidas da mesma chave (p. ex. os membros de uma guild): uma em voo por vez e nenhuma se já está carregada.
+public struct LoadGate: Equatable, Sendable {
+    private var inFlight: Set<String> = []
+    public init() {}
+
+    /// true se o chamador deve carregar `key` agora (e depois chamar `finish`). `loaded` = os dados já estão no estado; `force` ignora isso
+    /// (releitura), mas nunca sobrepõe uma carga em voo.
+    public mutating func begin(_ key: String, loaded: Bool = false, force: Bool = false) -> Bool {
+        if inFlight.contains(key) || (loaded && !force) { return false }
+        inFlight.insert(key)
+        return true
+    }
+
+    public mutating func finish(_ key: String) { inFlight.remove(key) }
+    public func isLoading(_ key: String) -> Bool { inFlight.contains(key) }
 }
 
 /// Todo o estado de dados do utilizador autenticado, como valor puro: o app só o embrulha num ObservableObject e faz o I/O.
@@ -17,6 +35,8 @@ public struct Workspace: Equatable, Sendable {
     public private(set) var channels: [String: [Channel]] = [:]
     /// guildId -> membros, só das guilds cuja lista foi pedida.
     public private(set) var members: [String: [Member]] = [:]
+    /// guildId -> os meus cargos (sem @everyone), conhecidos quando a minha linha de membro foi vista (lista ou evento).
+    public private(set) var myRoles: [String: Set<String>] = [:]
     public private(set) var messages: [String: MessageList] = [:]
     public private(set) var unread = UnreadCounts()
     public private(set) var voice = VoiceRoster()
@@ -54,7 +74,10 @@ public struct Workspace: Equatable, Sendable {
         unread.set(states, for: channels[guildId] ?? [])
     }
 
-    public mutating func setMembers(_ list: [Member], guildId: String) { members[guildId] = list }
+    public mutating func setMembers(_ list: [Member], guildId: String) {
+        members[guildId] = list
+        if let me = list.first(where: { $0.id == meId }) { myRoles[guildId] = Set(me.roleIds) }
+    }
     public mutating func setMessages(_ page: MessagePage, channelId: String) { messages[channelId, default: MessageList()].replace(with: page) }
     public mutating func prependMessages(_ page: MessagePage, channelId: String) { messages[channelId, default: MessageList()].prepend(page) }
     public mutating func setVoice(_ participants: [VoiceParticipant], channelId: String) { voice.set(participants, in: channelId) }
@@ -95,17 +118,27 @@ public struct Workspace: Equatable, Sendable {
 
         case .memberJoin(let e):
             if members[e.guildId] != nil { upsert(e.member, guildId: e.guildId) }
+            if e.member.id == meId { myRoles[e.guildId] = Set(e.member.roleIds) }
         case .memberUpdate(let e):
+            // O evento traz o Member inteiro: aplica-se na hora. Só os MEUS cargos mudam o que eu vejo (canais, permissões) e pedem releitura.
             if members[e.guildId] != nil { upsert(e.member, guildId: e.guildId) }
-            return [.guild(e.guildId)]
+            if e.member.id == meId || e.userId == meId {
+                myRoles[e.guildId] = Set(e.member.roleIds)
+                return [.guild(e.guildId)]
+            }
         case .memberLeave(let e):
             if e.userId == meId { drop(guild: e.guildId); return [] }
             members[e.guildId]?.removeAll { $0.id == e.userId }
             voice.removeUser(e.userId, in: Set((channels[e.guildId] ?? []).map(\.id)))
 
-        case .roleCreate(let e): return [.guild(e.guildId)]
-        case .roleUpdate(let e): return [.guild(e.guildId)]
-        case .roleDelete(let e): return [.guild(e.guildId)]
+        case .roleCreate: break  // um cargo novo ainda não tem membros: não muda nada para ninguém
+        case .roleUpdate(let e):
+            if affectsMe(role: e.role.id, everyone: e.role.everyone, guildId: e.guildId) { return [.guild(e.guildId)] }
+        case .roleDelete(let e):
+            let mine = affectsMe(role: e.roleId, everyone: false, guildId: e.guildId)
+            if let n = members[e.guildId]?.count { for i in 0..<n { members[e.guildId]![i].roleIds.removeAll { $0 == e.roleId } } }
+            myRoles[e.guildId]?.remove(e.roleId)
+            if mine { return [.guild(e.guildId)] }
         case .channelPermissions(let e): return [.guild(e.guildId)]
 
         case .channelCreate(let c), .channelUpdate(let c):
@@ -126,6 +159,12 @@ public struct Workspace: Equatable, Sendable {
         if let i = guilds.firstIndex(where: { $0.id == g.id }) { guilds[i] = g } else { guilds.append(g) }
     }
 
+    /// O cargo muda as minhas permissões? @everyone sempre; os outros só se eu o tenho. Sem saber os meus cargos, assume que sim.
+    private func affectsMe(role id: String, everyone: Bool, guildId: String) -> Bool {
+        guard !everyone, let mine = myRoles[guildId] else { return true }
+        return mine.contains(id)
+    }
+
     private mutating func upsert(_ m: Member, guildId: String) {
         if let i = members[guildId]?.firstIndex(where: { $0.id == m.id }) { members[guildId]![i] = m } else { members[guildId, default: []].append(m) }
     }
@@ -137,7 +176,7 @@ public struct Workspace: Equatable, Sendable {
 
     private mutating func drop(guild id: String) {
         for c in channels[id] ?? [] { drop(channel: c.id) }
-        channels[id] = nil; members[id] = nil
+        channels[id] = nil; members[id] = nil; myRoles[id] = nil
         guilds.removeAll { $0.id == id }
     }
 }

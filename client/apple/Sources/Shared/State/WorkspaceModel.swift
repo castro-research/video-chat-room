@@ -26,6 +26,8 @@ final class WorkspaceModel: ObservableObject {
     private var refetching = false
     private var refetchAgain = false
     private var lastMarked: [String: String] = [:]
+    /// Uma carga de membros por guild de cada vez (selectGuild, a lista aberta e a releitura geral pedem a mesma).
+    private var memberLoads = LoadGate()
 
     init(api: KurzAPI, me: User, info: ServerInfo?) {
         self.api = api; self.info = info; self.meId = me.id
@@ -109,7 +111,8 @@ final class WorkspaceModel: ObservableObject {
                 ws.setGuilds(guilds)
                 loadingGuilds = false
                 await withTaskGroup(of: Void.self) { group in
-                    for g in guilds { group.addTask { await self.loadGuild(g.id) } }
+                    // depois de `ready` os membros já carregados (ou da guild aberta) podem ter perdido eventos: relê-os
+                    for g in guilds { group.addTask { await self.loadGuild(g.id, reloadMembers: true) } }
                 }
                 fixSelection()
                 if let c = selectedChannelId { await loadMessages(c) }
@@ -125,20 +128,24 @@ final class WorkspaceModel: ObservableObject {
         fixSelection()
     }
 
-    private func loadGuild(_ id: String) async {
+    /// Canais e não-lidos; com [reloadMembers] relê também os membros da guild aberta ou já carregados (refetch por evento não os relê).
+    private func loadGuild(_ id: String, reloadMembers: Bool = false) async {
         do {
             async let channels = api.channels(guildId: id)
             async let reads = api.readStates(guildId: id)
             let (cs, rs) = try await (channels, reads)
             ws.setChannels(cs, guildId: id)
             ws.setReadStates(rs, guildId: id)
-            if id == selectedGuildId || ws.members[id] != nil { await loadMembers(id) }
+            if reloadMembers && (id == selectedGuildId || ws.members[id] != nil) { await loadMembers(id, force: true) }
         } catch {
             report(error)
         }
     }
 
-    func loadMembers(_ guildId: String) async {
+    /// Carrega os membros de [guildId] se ainda não estão (nem estão a ser) carregados; [force] relê os já carregados.
+    func loadMembers(_ guildId: String, force: Bool = false) async {
+        guard memberLoads.begin(guildId, loaded: ws.members[guildId] != nil, force: force) else { return }
+        defer { memberLoads.finish(guildId) }
         do {
             var all: [Member] = []
             var after: String?
@@ -160,7 +167,7 @@ final class WorkspaceModel: ObservableObject {
         selectedGuildId = id
         selectedChannelId = nil; ws.viewing = nil
         replyTo = nil; editing = nil
-        Task { if ws.members[id] == nil { await loadMembers(id) } }
+        Task { await loadMembers(id) }
         if openFirstText, let c = ChannelTree.firstText(ws.channels[id] ?? []) { openChannel(c.id) }
     }
 
