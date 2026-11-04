@@ -386,7 +386,8 @@ func (s *Service) AddReaction(ctx context.Context, user, channel, id int64, emoj
 		if !exists && n >= MaxEmojisPerMsg {
 			return httpx.Validation("a message takes at most 20 different emojis")
 		}
-		if err := s.store.addReaction(ctx, tx, id, user, emoji); err != nil {
+		added, err := s.store.addReaction(ctx, tx, id, user, emoji)
+		if err != nil || !added {
 			return err
 		}
 		return s.record(ctx, tx, reactionEvent(bus.ReactionAdd, channel, id, user, emoji))
@@ -420,7 +421,8 @@ func (s *Service) RemoveReaction(ctx context.Context, user, channel, id int64, e
 		if err := s.store.lockMessage(ctx, tx, channel, id); err != nil {
 			return err
 		}
-		if err := s.store.removeReaction(ctx, tx, id, target, emoji); err != nil {
+		removed, err := s.store.removeReaction(ctx, tx, id, target, emoji)
+		if err != nil || !removed {
 			return err
 		}
 		return s.record(ctx, tx, reactionEvent(bus.ReactionRemove, channel, id, target, emoji))

@@ -1,13 +1,17 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
 
 	"kurz/server/internal/permissions"
+	"kurz/server/internal/platform/config"
+	"kurz/server/internal/platform/dbtest"
 )
 
 func idsOf(ms []map[string]any) []string {
@@ -437,5 +441,40 @@ func TestMessagesConcurrentSendsAreMonotonic(t *testing.T) {
 			t.Fatalf("user %s: %d after %d", parts[0], n, prev)
 		}
 		last[parts[0]] = n
+	}
+}
+
+// Os clientes tratam reaction.add/remove como delta: PUT/DELETE repetido não pode gerar evento.
+func TestReactionEventsOnlyOnChange(t *testing.T) {
+	cfg := config.Config{ServerName: "Teste", Registration: "open", JWTSecret: []byte(strings.Repeat("k", 32))}
+	pool := dbtest.New(t)
+	srv := httptest.NewServer(New(cfg, pool))
+	defer srv.Close()
+	alice := newUser(t, srv.URL, "alice")
+	gid := createGuild(alice, "Casa")
+	ch := channelNamed(alice, gid, "geral")["id"].(string)
+	base := "/v1/channels/" + ch + "/messages"
+	mid := alice.do("POST", base, 201, map[string]any{"text": "reaja"})["id"].(string)
+	path := base + "/" + mid + "/reactions/" + url.PathEscape("👍") + "/@me"
+	count := func(typ string) (n int) {
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM outbox WHERE type = $1`, typ).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	for i := 0; i < 3; i++ {
+		alice.do("PUT", path, 204, nil)
+	}
+	if n := count("reaction.add"); n != 1 {
+		t.Fatalf("reaction.add = %d, queria 1", n)
+	}
+	alice.do("DELETE", path, 204, nil)
+	alice.do("DELETE", path, 204, nil)
+	if n := count("reaction.remove"); n != 1 {
+		t.Fatalf("reaction.remove = %d, queria 1", n)
+	}
+	alice.do("DELETE", base+"/"+mid+"/reactions/"+url.PathEscape("🎉")+"/@me", 204, nil) // nunca existiu
+	if n := count("reaction.remove"); n != 1 {
+		t.Fatalf("DELETE sem efeito gerou evento: %d", n)
 	}
 }

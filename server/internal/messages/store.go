@@ -220,15 +220,17 @@ func (s *store) distinctEmojis(ctx context.Context, tx pgx.Tx, message int64, em
 	return
 }
 
-func (s *store) addReaction(ctx context.Context, tx pgx.Tx, message, user int64, emoji string) error {
-	_, err := tx.Exec(ctx,
+// addReaction diz se a reação era nova; os clientes tratam cada evento como delta, então só mudança gera evento.
+func (s *store) addReaction(ctx context.Context, tx pgx.Tx, message, user int64, emoji string) (bool, error) {
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, message, user, emoji)
-	return err
+	return tag.RowsAffected() > 0, err
 }
 
-func (s *store) removeReaction(ctx context.Context, tx pgx.Tx, message, user int64, emoji string) error {
-	_, err := tx.Exec(ctx, `DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`, message, user, emoji)
-	return err
+// removeReaction diz se havia reação para remover.
+func (s *store) removeReaction(ctx context.Context, tx pgx.Tx, message, user int64, emoji string) (bool, error) {
+	tag, err := tx.Exec(ctx, `DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`, message, user, emoji)
+	return tag.RowsAffected() > 0, err
 }
 
 // ---- read state ----
