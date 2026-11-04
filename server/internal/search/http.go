@@ -41,6 +41,9 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	vals := r.URL.Query()
+	if err := httpx.NoNUL(vals.Get("q")); err != nil {
+		return err
+	}
 	q := Query{Text: vals.Get("q"), Limit: limit, Highlight: vals.Get("highlight") == "true"}
 	for name, dst := range map[string]*int64{"channelId": &q.ChannelID, "authorId": &q.AuthorID, "cursor": &q.Cursor} {
 		if raw := vals.Get(name); raw != "" {

@@ -462,6 +462,9 @@ func (s *Service) handlePreview(w http.ResponseWriter, r *http.Request) error {
 	if _, err := httpx.Caller(r); err != nil {
 		return err
 	}
+	if httpx.NoNUL(r.PathValue("code")) != nil {
+		return httpx.ErrNotFound
+	}
 	inv, g, err := s.Preview(r.Context(), r.PathValue("code"))
 	if err != nil {
 		return err
@@ -475,6 +478,9 @@ func (s *Service) handleJoin(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if httpx.NoNUL(r.PathValue("code")) != nil {
+		return httpx.ErrNotFound
+	}
 	g, err := s.Join(r.Context(), user, r.PathValue("code"))
 	if err != nil {
 		return err
@@ -487,6 +493,9 @@ func (s *Service) handleRevokeInvite(w http.ResponseWriter, r *http.Request) err
 	user, err := httpx.Caller(r)
 	if err != nil {
 		return err
+	}
+	if httpx.NoNUL(r.PathValue("code")) != nil {
+		return httpx.ErrNotFound
 	}
 	if err := s.RevokeInvite(r.Context(), user, r.PathValue("code")); err != nil {
 		return err
