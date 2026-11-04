@@ -50,9 +50,10 @@ spec:
     metadata:
       labels: { app: kurz }
       annotations:
-        # /metrics é INTERNO: sem auth e fora do rate limit. Nunca o roteie num Ingress público.
+        # /metrics é INTERNO: sem auth. Fica numa porta própria (KURZ_METRICS_ADDR=:9090) que nenhum Service expõe; o
+        # Prometheus raspa pelo IP do pod. Nunca crie Service/Ingress/NodePort para a porta "metrics".
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
+        prometheus.io/port: "9090"
         prometheus.io/path: /metrics
     spec:
       terminationGracePeriodSeconds: 30
@@ -62,6 +63,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9090 }
           envFrom:
             - configMapRef: { name: kurz-config }
             - secretRef: { name: kurz-secrets }

@@ -174,3 +174,14 @@ func TestWebSocketLimitsConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsAddr(t *testing.T) {
+	if c, err := Load(env(valid())); err != nil || c.MetricsAddr != "" {
+		t.Fatalf("default must be empty (metrics on the API listener): %+v %v", c.MetricsAddr, err)
+	}
+	m := valid()
+	m["KURZ_METRICS_ADDR"] = ":9090"
+	if c, err := Load(env(m)); err != nil || c.MetricsAddr != ":9090" {
+		t.Fatalf("%+v %v", c.MetricsAddr, err)
+	}
+}

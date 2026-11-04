@@ -92,9 +92,17 @@ func run() error {
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
 	go func() { errc <- srv.ListenAndServe() }()
 	slog.Info("listening", "addr", cfg.Addr)
+	var msrv *http.Server
+	if app.MetricsHandler != nil {
+		msrv = &http.Server{Addr: cfg.MetricsAddr, Handler: app.MetricsHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second}
+		go func() { errc <- msrv.ListenAndServe() }()
+		slog.Info("metrics listening on a separate address", "addr", cfg.MetricsAddr)
+	} else {
+		slog.Warn("metrics served on the API listener (KURZ_METRICS_ADDR not set); do not expose /metrics publicly")
+	}
 
 	var serveErr error
 	select {
@@ -108,6 +116,9 @@ func run() error {
 	<-workersDone
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if msrv != nil {
+		_ = msrv.Shutdown(shutdownCtx)
+	}
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

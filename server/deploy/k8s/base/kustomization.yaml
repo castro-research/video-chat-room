@@ -10,6 +10,7 @@ configMapGenerator:
   - name: kurz-config
     literals:
       - KURZ_ADDR=:8080
+      - KURZ_METRICS_ADDR=:9090
       - KURZ_NODE_ID_FROM_HOSTNAME=true
       - KURZ_SERVER_NAME=Kurz
       - KURZ_REGISTRATION=open

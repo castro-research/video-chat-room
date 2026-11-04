@@ -179,3 +179,51 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Error("route label leaks ids")
 	}
 }
+
+// O label `method` tem lista fixa: métodos inventados pelo cliente viram "OTHER", não uma série cada.
+func TestMetricsMethodLabelIsBounded(t *testing.T) {
+	srv := newOpsServer(t, func(c *config.Config) {})
+	for _, m := range []string{"FOO1", "FOO2", "BAR"} {
+		rawDo(t, m, srv.URL+"/v1/guilds", nil, "")
+	}
+	res := rawDo(t, "GET", srv.URL+"/metrics", nil, "")
+	b, _ := io.ReadAll(res.Body)
+	text := string(b)
+	if strings.Contains(text, `method="FOO1"`) || strings.Contains(text, `method="BAR"`) {
+		t.Fatal("arbitrary HTTP methods became metric labels")
+	}
+	if !strings.Contains(text, `method="OTHER"`) {
+		t.Fatalf("missing OTHER series:\n%s", text)
+	}
+}
+
+// Com KURZ_METRICS_ADDR o /metrics sai do listener da API (404 lá, mesmo com rate limit) e vive no handler próprio.
+func TestMetricsOnSeparateListener(t *testing.T) {
+	cfg := config.Config{ServerName: "Teste", Registration: "open", JWTSecret: []byte(strings.Repeat("k", 32)), MetricsAddr: ":0"}
+	cfg.RateLimit = config.RateLimit{Enabled: true, AuthBurst: 100, AuthPerMin: 100, WriteBurst: 100, WritePerSec: 100}
+	app := NewApp(cfg, dbtest.New(t))
+	if app.MetricsHandler == nil {
+		t.Fatal("MetricsHandler must be set when MetricsAddr is set")
+	}
+	api, mt := httptest.NewServer(app.Handler), httptest.NewServer(app.MetricsHandler)
+	t.Cleanup(func() { api.Close(); mt.Close() })
+
+	if res := rawDo(t, "GET", api.URL+"/metrics", nil, ""); res.StatusCode != 404 {
+		t.Fatalf("/metrics on the API listener = %d, want 404", res.StatusCode)
+	}
+	rawDo(t, "GET", api.URL+"/healthz", nil, "")
+	res := rawDo(t, "GET", mt.URL+"/metrics", nil, "")
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode != 200 || !strings.Contains(string(b), "kurz_http_requests_total") || !strings.Contains(string(b), "go_goroutines") {
+		t.Fatalf("metrics listener = %d %.200s", res.StatusCode, b)
+	}
+	if res := rawDo(t, "GET", mt.URL+"/v1/guilds", nil, ""); res.StatusCode != 404 {
+		t.Fatalf("API route on the metrics listener = %d, want 404", res.StatusCode)
+	}
+
+	// sem MetricsAddr continua no listener da API (dev)
+	cfg.MetricsAddr = ""
+	if app2 := NewApp(cfg, dbtest.New(t)); app2.MetricsHandler != nil {
+		t.Fatal("MetricsHandler must be nil without MetricsAddr")
+	}
+}

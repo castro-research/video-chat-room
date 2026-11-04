@@ -22,6 +22,7 @@ type Config struct {
 	Voice        Voice
 	RateLimit    RateLimit
 	WS           WebSocket
+	MetricsAddr  string // KURZ_METRICS_ADDR: listener próprio do /metrics (ex.: :9090). Vazio = /metrics no listener da API (só dev)
 	TrustedProxy bool   // KURZ_TRUSTED_PROXY: confia no X-Forwarded-For (só atrás de um proxy que o sobrescreve)
 	OtelEndpoint string // KURZ_OTEL_ENDPOINT: URL OTLP/HTTP do coletor (ex.: http://otel:4318); vazio desliga os traces
 }
@@ -117,6 +118,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	c.TrustedProxy = getenv("KURZ_TRUSTED_PROXY") == "true"
 	c.OtelEndpoint = getenv("KURZ_OTEL_ENDPOINT")
+	c.MetricsAddr = getenv("KURZ_METRICS_ADDR")
 	if err := loadRateLimit(&c, getenv); err != nil {
 		return Config{}, err
 	}

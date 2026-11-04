@@ -40,6 +40,7 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 | `KURZ_RATELIMIT_WRITE_BURST` / `KURZ_RATELIMIT_WRITE_PER_SEC` | `60` / `20` | token bucket **por usuário** nas demais escritas (POST/PUT/PATCH/DELETE; sem token válido, por IP) |
 | `KURZ_WS_FRAME_RATE` / `KURZ_WS_FRAME_BURST` | `10` / `20` | token bucket **por conexão WebSocket** para frames do cliente (heartbeat custa 1, `voice.state.set` custa 4). Estourou: fecha com `4011` |
 | `KURZ_WS_MAX_SESSIONS_PER_USER` | `20` | teto de sessões do gateway por usuário e réplica (ao vivo ou esperando resume; as abandonadas são recolhidas antes de recusar). Acima: `4012` |
+| `KURZ_METRICS_ADDR` | vazio | listener próprio do `/metrics` (ex.: `:9090`), **sem auth** e fora do rate limit; nesse caso o `/metrics` é **removido** do listener da API (404). **Vazio = `/metrics` no listener principal, só para dev** (o servidor avisa no log). No k8s a porta é `9090`, só no pod (sem Service/NodePort) |
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
 | `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 
@@ -86,8 +87,8 @@ os clientes parecem ter o IP do proxy.
 ## Observabilidade
 
 - Logs: JSON (`slog`). Cada requisição loga `request_id` (aceita o `X-Request-Id` do cliente, senão gera um; é devolvido no header) e `trace_id` quando há trace.
-- Métricas: `GET /metrics` (Prometheus). **Interno**: sem auth e fora do rate limit, não o exponha na Internet (no cluster, só o IP do pod; o Service
-  público/Ingress não deve rotear esse caminho). Séries principais: `kurz_http_request_duration_seconds{method,route}` e `kurz_http_requests_total{method,route,status}`
+- Métricas: `GET /metrics` (Prometheus). **Interno**: sem auth e fora do rate limit. Com `KURZ_METRICS_ADDR` ele vive num listener separado (e some do da API); sem ele fica no
+  listener principal, só aceitável em dev. O label `method` só aceita os métodos HTTP padrão (o resto vira `OTHER`). Séries principais: `kurz_http_request_duration_seconds{method,route}` e `kurz_http_requests_total{method,route,status}`
   (a rota é o padrão do ServeMux, ex. `POST /v1/channels/{channelId}/messages`, sem ids; `unmatched` e `rate_limited` para o que não chegou ao mux), `kurz_ws_connections`,
   `kurz_ws_sessions`, `kurz_gateway_events_delivered_total`, `kurz_gateway_events_dropped_total` (backpressure), `kurz_gateway_slow_disconnects_total`,
   `kurz_outbox_lag_seconds` (idade do evento pendente mais antigo), `kurz_outbox_pending`, `kurz_jobs_pending`, `kurz_jobs_failed`, `kurz_pgx_pool_*` e as de runtime do Go.

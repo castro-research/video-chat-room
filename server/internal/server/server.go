@@ -40,11 +40,14 @@ const (
 // (relay do outbox e gateway), que rodam no mesmo processo.
 type App struct {
 	Handler http.Handler
-	bus     *bus.Postgres
-	gateway *gateway.Gateway
-	jobs    *jobs.Worker
-	voice   *voice.Service
-	limits  []*ratelimit.Limiter
+	// MetricsHandler serve só o /metrics; não é nil quando KURZ_METRICS_ADDR está definido (aí o /metrics NÃO existe em Handler)
+	// e o chamador o serve no listener de métricas.
+	MetricsHandler http.Handler
+	bus            *bus.Postgres
+	gateway        *gateway.Gateway
+	jobs           *jobs.Worker
+	voice          *voice.Service
+	limits         []*ratelimit.Limiter
 }
 
 // Option ajusta a montagem do App.
@@ -171,11 +174,18 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 		st := gw.Stats()
 		return obs.GatewayStats{Connections: st.Connections, Sessions: st.Sessions, Delivered: st.Delivered, Dropped: st.Dropped, SlowKills: st.SlowDisconnects}
 	})
-	// Interno: sem auth e fora do rate limit (o limitador só olha escritas, e a ordem abaixo o deixa de fora de qualquer forma).
-	mux.Handle("GET /metrics", metrics.Handler())
+	// Interno: sem auth e fora do rate limit. Com cfg.MetricsAddr sai do listener da API (e do limitador) e vai para um próprio.
+	var metricsHandler http.Handler
+	if cfg.MetricsAddr == "" {
+		mux.Handle("GET /metrics", metrics.Handler())
+	} else {
+		mm := http.NewServeMux()
+		mm.Handle("GET /metrics", metrics.Handler())
+		metricsHandler = mm
+	}
 
 	var h http.Handler = mux
-	app := &App{bus: evBus, gateway: gw, jobs: worker, voice: voiceSvc}
+	app := &App{MetricsHandler: metricsHandler, bus: evBus, gateway: gw, jobs: worker, voice: voiceSvc}
 	if rl := cfg.RateLimit; rl.Enabled {
 		m := &ratelimit.Middleware{
 			Auth:       ratelimit.New(rl.AuthPerMin/60, rl.AuthBurst, nil),

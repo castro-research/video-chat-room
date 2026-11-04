@@ -1,7 +1,8 @@
 // Package obs expõe as métricas Prometheus (RNF14). Cada App tem o seu registro, então testes não colidem.
 //
-// /metrics é interno: sem auth e fora do rate limit. Não o exponha na Internet (no Kubernetes, o Service/Ingress
-// público não deve rotear esse caminho; o Prometheus o raspa pelo IP do pod).
+// /metrics é interno: sem auth e fora do rate limit. Com KURZ_METRICS_ADDR ele sai do listener da API e vai para um
+// listener próprio (no Kubernetes, uma porta que nenhum Service público expõe; o Prometheus raspa pelo IP do pod).
+// Sem KURZ_METRICS_ADDR (dev) continua no listener principal: não o exponha na Internet.
 package obs
 
 import (
@@ -71,6 +72,17 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{})
 }
 
+// Method limita a cardinalidade do label `method`: o cliente escolhe o método HTTP, então só os padrão viram série própria
+// e o resto agrupa em "OTHER".
+func Method(m string) string {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodOptions, http.MethodConnect, http.MethodTrace:
+		return m
+	}
+	return "OTHER"
+}
+
 type recorder struct {
 	http.ResponseWriter
 	status int
@@ -90,9 +102,10 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 		if route == "" {
 			route = "unmatched"
 		}
-		m.requests.WithLabelValues(r.Method, route, strconv.Itoa(rec.status)).Inc()
+		method := Method(r.Method)
+		m.requests.WithLabelValues(method, route, strconv.Itoa(rec.status)).Inc()
 		if route != "GET /v1/gateway" { // o WebSocket vive minutos: mediria a conexão, não uma requisição
-			m.duration.WithLabelValues(r.Method, route).Observe(time.Since(start).Seconds())
+			m.duration.WithLabelValues(method, route).Observe(time.Since(start).Seconds())
 		}
 	})
 }
