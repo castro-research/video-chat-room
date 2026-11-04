@@ -29,9 +29,9 @@ targets:
         LSMinimumSystemVersion: "13.0"
         NSCameraUsageDescription: Para chamadas de vídeo na sala.
         NSMicrophoneUsageDescription: Para chamadas de voz na sala.
-        NSLocalNetworkUsageDescription: Para ligar ao servidor de chamadas na rede local.
+        NSLocalNetworkUsageDescription: Para ligar ao servidor Kurz e ao de chamadas na rede local.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true  # manager http:// e SFU ws:// só em IPs/hosts da LAN; fora da LAN é preciso https/wss
+          NSAllowsLocalNetworking: true  # servidor Kurz http:// (ex. localhost:8080) e SFU ws:// só em localhost/LAN; fora da LAN é preciso https/wss
     settings:
       groups: [common]
       base:
@@ -59,9 +59,9 @@ targets:
         CADisableMinimumFrameDurationOnPhone: true
         NSCameraUsageDescription: Para chamadas de vídeo/voz na sala.
         NSMicrophoneUsageDescription: Para chamadas de vídeo/voz na sala.
-        NSLocalNetworkUsageDescription: Para ligar ao servidor de chamadas na rede local.
+        NSLocalNetworkUsageDescription: Para ligar ao servidor Kurz e ao de chamadas na rede local.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          NSAllowsLocalNetworking: true  # no iPhone físico, localhost é o próprio telemóvel: usa o IP do Mac na LAN
         UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations:
           [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationPortraitUpsideDown]
