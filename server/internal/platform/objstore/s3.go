@@ -24,7 +24,7 @@ type S3Config struct {
 }
 
 // S3 usa minio-go/v7: um módulo só, sem o grafo de dezenas de módulos do aws-sdk-go-v2, e a API de
-// presign é direta. Funciona com MinIO e com S3.
+// presign é direta. Funciona com SeaweedFS, MinIO e S3.
 type S3 struct {
 	cli     *minio.Client // operações do servidor (Stat/Delete/bucket)
 	presign *minio.Client // assina para o endpoint público; com Region fixa, não faz chamada de rede

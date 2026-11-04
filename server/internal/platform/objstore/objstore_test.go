@@ -89,7 +89,7 @@ func TestFakeExpiryAndMethod(t *testing.T) {
 	}
 }
 
-// TestS3Contract fala com um MinIO/S3 de verdade: KURZ_TEST_S3_ENDPOINT=localhost:9000 (make s3-up).
+// TestS3Contract fala com um S3 de verdade (SeaweedFS do compose): KURZ_TEST_S3_ENDPOINT=localhost:8333 (make s3-up).
 func TestS3Contract(t *testing.T) {
 	ep := os.Getenv("KURZ_TEST_S3_ENDPOINT")
 	if ep == "" {

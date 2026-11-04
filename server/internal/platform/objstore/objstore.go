@@ -1,4 +1,4 @@
-// Package objstore é a fronteira com o armazenamento de objetos (S3/MinIO) dos anexos.
+// Package objstore é a fronteira com o armazenamento de objetos (S3; em dev, SeaweedFS) dos anexos.
 //
 // A interface é pequena de propósito: o servidor nunca toca nos bytes. O cliente envia e baixa direto
 // pelo storage com URLs pré-assinadas (RNF13) e o servidor só confere o resultado (Stat) e apaga (Delete).

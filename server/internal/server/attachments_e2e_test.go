@@ -30,8 +30,8 @@ type storageEnv struct {
 	store objstore.Store
 }
 
-// storageBackends roda o teste contra o fake em memória e, se KURZ_TEST_S3_ENDPOINT estiver setada, contra o MinIO real.
-// Sem a variável o subteste "minio" aparece como SKIP explícito.
+// storageBackends roda o teste contra o fake em memória e, se KURZ_TEST_S3_ENDPOINT estiver setada, contra um S3 real (SeaweedFS do compose).
+// Sem a variável o subteste "s3" aparece como SKIP explícito.
 func storageBackends(t *testing.T, fn func(t *testing.T, e storageEnv)) {
 	t.Run("fake", func(t *testing.T) {
 		f := objstore.NewFake()
@@ -40,10 +40,10 @@ func storageBackends(t *testing.T, fn func(t *testing.T, e storageEnv)) {
 		f.SetBaseURL(fs.URL)
 		fn(t, newStorageEnv(t, f))
 	})
-	t.Run("minio", func(t *testing.T) {
+	t.Run("s3", func(t *testing.T) {
 		ep := os.Getenv("KURZ_TEST_S3_ENDPOINT")
 		if ep == "" {
-			t.Skip("KURZ_TEST_S3_ENDPOINT not set: MinIO real não testado (make s3-up)")
+			t.Skip("KURZ_TEST_S3_ENDPOINT not set: S3 real não testado (make s3-up)")
 		}
 		b := make([]byte, 5)
 		_, _ = crand.Read(b)

@@ -52,7 +52,7 @@ type ICEServer struct {
 func (v Voice) Enabled() bool { return len(v.Secret) > 0 && v.SFUURL != "" }
 
 // S3 configura o armazenamento de anexos. É opcional: sem Endpoint o storage fica desligado
-// (Enabled() == false) e os endpoints de anexo respondem 501. Os demais campos têm padrões de dev (MinIO do compose).
+// (Enabled() == false) e os endpoints de anexo respondem 501. Os demais campos têm padrões de dev (SeaweedFS do compose).
 type S3 struct {
 	Endpoint       string // host:port ou URL (http://host:port); vazio desliga o storage
 	PublicEndpoint string // endereço que o CLIENTE alcança, usado nas URLs pré-assinadas; padrão: Endpoint
