@@ -225,7 +225,19 @@ func (s *store) member(ctx context.Context, q querier, guild, user int64) (Membe
 	return items[0], nil
 }
 
+// deleteMemberOverrides apaga os overrides de canal por membro (target_kind='member') do usuário na guild.
+// Têm de sair na mesma transação que a saída do membro, senão voltam a valer na reentrada por convite ou após unban.
+func (s *store) deleteMemberOverrides(ctx context.Context, q querier, guild, user int64) error {
+	_, err := q.Exec(ctx,
+		`DELETE FROM channel_overrides o USING channels c
+		 WHERE o.channel_id = c.id AND c.guild_id = $1 AND o.target_kind = 'member' AND o.target_id = $2`, guild, user)
+	return err
+}
+
 func (s *store) removeMember(ctx context.Context, q querier, guild, user int64) error {
+	if err := s.deleteMemberOverrides(ctx, q, guild, user); err != nil {
+		return err
+	}
 	tag, err := q.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guild, user)
 	if err != nil {
 		return err
@@ -416,6 +428,9 @@ func (s *store) ban(ctx context.Context, tx pgx.Tx, guild, user, by int64, reaso
 		`INSERT INTO bans (guild_id, user_id, banned_by, reason) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (guild_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, banned_by = EXCLUDED.banned_by`,
 		guild, user, by, reason); err != nil {
+		return false, err
+	}
+	if err := s.deleteMemberOverrides(ctx, tx, guild, user); err != nil {
 		return false, err
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM members WHERE guild_id = $1 AND user_id = $2`, guild, user)
