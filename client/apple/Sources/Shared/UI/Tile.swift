@@ -1,3 +1,4 @@
+import KurzKit
 import SwiftUI
 import WebRTC
 
@@ -13,17 +14,17 @@ struct Tile: Identifiable, Hashable {
 struct TileView: View {
     @EnvironmentObject var app: AppModel
     let tile: Tile
-    let person: Participant
+    let person: VoiceParticipant
     var focused = false
 
     var body: some View {
-        let mine = tile.userId == app.guest.userId
+        let mine = tile.userId == app.meId
         let speaking = tile.kind == .person && mine && !app.muted && app.session.micLevel > 0.05
         ZStack(alignment: .bottomLeading) {
             P.sidebar
             content(mine: mine).frame(maxWidth: .infinity, maxHeight: .infinity)
             HStack(spacing: 6) {
-                if tile.kind == .person && !person.mic { Image(systemName: "mic.slash").font(.system(size: 11)).foregroundColor(.white) }
+                if tile.kind == .person && person.muted { Image(systemName: "mic.slash").font(.system(size: 11)).foregroundColor(.white) }
                 Text(tile.kind == .screen ? "\(tile.name) · ecrã" : tile.name).font(.system(size: 12, weight: .medium)).foregroundColor(.white).lineLimit(1)
             }
             .padding(.horizontal, 8).padding(.vertical, 4).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6)).padding(8)
@@ -47,7 +48,7 @@ struct TileView: View {
             // o ecrã próprio mostra-se ajustado; a câmara própria em espelho não, para manter simples
             VideoView(track: track, fit: tile.kind == .screen)
         } else {
-            Avatar(name: tile.name, hue: app.hue(of: tile.userId), size: focused ? 120 : 72)
+            Avatar(name: tile.name, hue: person.user.avatarHue, size: focused ? 120 : 72)
         }
     }
 

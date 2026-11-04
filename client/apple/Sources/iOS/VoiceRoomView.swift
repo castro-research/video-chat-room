@@ -1,18 +1,19 @@
+import KurzKit
 import SwiftUI
 
 /// Sala de voz no telemóvel: grelha de mosaicos; tocar num põe-no em destaque (com zoom por pinça), tocar no destacado volta à grelha.
 struct VoiceRoomView: View {
     @EnvironmentObject var app: AppModel
+    @EnvironmentObject var wm: WorkspaceModel  // o roster de voz vem do gateway: a vista refaz-se com ele
     let onBack: () -> Void
     @State private var focus: String?
 
     var body: some View {
-        let room = app.shownRoom
-        let people = room.map { app.people(in: $0) } ?? []
-        var slots: [(Tile, Participant)] = []
+        let people = app.voiceChannel.map { app.people(in: $0.id) } ?? []
+        var slots: [(Tile, VoiceParticipant)] = []
         for p in people {
-            slots.append((Tile(userId: p.userId, name: p.name, kind: .person), p))
-            if p.screen && p.userId != app.guest.userId { slots.append((Tile(userId: p.userId, name: p.name, kind: .screen), p)) }
+            slots.append((Tile(userId: p.id, name: p.user.name, kind: .person), p))
+            if p.sharing && p.id != app.meId { slots.append((Tile(userId: p.id, name: p.user.name, kind: .screen), p)) }
         }
         let big = slots.first { $0.0.id == focus }
         return VStack(spacing: 0) {
@@ -47,7 +48,7 @@ struct VoiceRoomView: View {
         HStack(spacing: 8) {
             Button(action: onBack) { Image(systemName: "chevron.left").foregroundColor(P.textMuted).frame(width: 36, height: 36) }.accessibilityLabel("Voltar")
             Image(systemName: "speaker.wave.2").font(.system(size: 14)).foregroundColor(P.textMuted)
-            Text(app.shownRoom?.name ?? "A entrar…").font(.system(size: 15, weight: .semibold)).foregroundColor(P.text).lineLimit(1)
+            Text(app.voiceChannel?.name ?? "A entrar…").font(.system(size: 15, weight: .semibold)).foregroundColor(P.text).lineLimit(1)
             Text("· \(count) \(count == 1 ? "pessoa" : "pessoas")").font(.system(size: 12)).foregroundColor(P.textFaint).lineLimit(1)
             if app.session.reconnecting { Text("· a reconectar…").font(.system(size: 12, weight: .semibold)).foregroundColor(P.idle).lineLimit(1) }
             Spacer()
