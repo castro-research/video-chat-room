@@ -16,3 +16,4 @@ client/apple/Sources/*/Info.plist
 /experimentos/sfu/sfu
 **/distclient/apple/build/
 client/apple/dist/
+server/bin/

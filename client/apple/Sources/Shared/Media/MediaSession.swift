@@ -1,4 +1,5 @@
 import Foundation
+import KurzKit
 import WebRTC
 
 /// Resolve uma vez, com sucesso ou erro, e quem espera é acordado; sem timeout próprio (ver MediaSession.connect).
@@ -116,24 +117,6 @@ final class MediaSession: NSObject, RTCPeerConnectionDelegate {
                     return
                 }
                 c.resume(returning: 0)
-            }
-        }
-    }
-
-    /// Uma linha com o estado da ligação e os pacotes de áudio enviados/recebidos (diagnóstico: "KURZ-AUDIO" na consola).
-    func debugLine() async -> String {
-        await withCheckedContinuation { (c: CheckedContinuation<String, Never>) in
-            pc.statistics { [pc] report in
-                var parts: [String] = ["pc=\(pc.connectionState.rawValue) ice=\(pc.iceConnectionState.rawValue) sig=\(pc.signalingState.rawValue)"]
-                for (_, st) in report.statistics where (st.values["kind"] as? String) == "audio" {
-                    switch st.type {
-                    case "outbound-rtp": parts.append("out(pkts=\(st.values["packetsSent"].map { "\($0)" } ?? "?"),bytes=\(st.values["bytesSent"].map { "\($0)" } ?? "?"))")
-                    case "inbound-rtp": parts.append("in(pkts=\(st.values["packetsReceived"].map { "\($0)" } ?? "?"),lvl=\(st.values["audioLevel"].map { "\($0)" } ?? "?"))")
-                    case "media-source": parts.append("src(lvl=\(st.values["audioLevel"].map { "\($0)" } ?? "?"))")
-                    default: break
-                    }
-                }
-                c.resume(returning: parts.joined(separator: " "))
             }
         }
     }

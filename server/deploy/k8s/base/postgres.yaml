@@ -1,0 +1,66 @@
+# Postgres para ESTUDO: uma instância só, sem réplica nem backup. Em produção use um serviço gerenciado ou um operador.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kurz-postgres
+  namespace: kurz
+type: Opaque
+stringData:
+  # SEGREDOS DE DESENVOLVIMENTO. Não são reais; troque antes de qualquer uso fora do kind.
+  POSTGRES_USER: kurz
+  POSTGRES_PASSWORD: kurz-dev-only
+  POSTGRES_DB: kurz
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kurz
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: pg }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: kurz
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:18
+          ports:
+            - { name: pg, containerPort: 5432 }
+          envFrom:
+            - secretRef: { name: kurz-postgres }
+          env:
+            - { name: PGDATA, value: /var/lib/postgresql/18/docker }
+          readinessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            exec: { command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"] }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests: { storage: 2Gi }

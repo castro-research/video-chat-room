@@ -1,3 +1,4 @@
+import KurzKit
 import SwiftUI
 #if canImport(AppKit)
 import AppKit
@@ -63,6 +64,60 @@ struct HealthDot: View {
     var body: some View {
         Circle().fill(ok == true ? P.online : ok == false ? P.danger : P.textFaint).frame(width: 8, height: 8)
             .help(ok == true ? "Servidor a responder" : ok == false ? "Servidor sem resposta" : "A verificar o servidor")
+    }
+}
+
+extension User {
+    /// O matiz que o servidor deu ao utilizador, ou um estável a partir do id.
+    var avatarHue: Double { hue ?? stableHue(id) }
+}
+
+extension Guild {
+    var avatarHue: Double { stableHue(id) }
+}
+
+/// Copia texto para a área de transferência.
+func copyToClipboard(_ text: String) {
+#if canImport(AppKit)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+#else
+    UIPasteboard.general.string = text
+#endif
+}
+
+extension View {
+    /// Campo de texto sem maiúscula automática nem correção (utilizador, códigos, endereços).
+    @ViewBuilder func plainInput() -> some View {
+#if os(iOS)
+        textInputAutocapitalization(.never).autocorrectionDisabled()
+#else
+        autocorrectionDisabled()
+#endif
+    }
+}
+
+/// Bolinha de não-lidos.
+struct UnreadBadge: View {
+    let count: Int
+    var body: some View {
+        Text(count > 99 ? "99+" : "\(count)").font(.system(size: 10.5, weight: .bold)).foregroundColor(.white)
+            .padding(.horizontal, 6).frame(minWidth: 18, minHeight: 18).background(P.danger, in: Capsule())
+    }
+}
+
+/// Faixa "a reconectar…" quando o gateway não está ligado.
+struct ConnectionBanner: View {
+    let state: ConnectionState
+    var body: some View {
+        if state != .connected {
+            HStack(spacing: 8) {
+                if state == .disconnected { Image(systemName: "wifi.slash") } else { ProgressView().controlSize(.small) }
+                Text(state == .reconnecting ? "A reconectar…" : state == .connecting ? "A ligar…" : "Sem ligação em tempo real")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }.foregroundColor(.black.opacity(0.8)).padding(.horizontal, 16).padding(.vertical, 6).background(P.idle)
+        }
     }
 }
 

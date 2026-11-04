@@ -1,13 +1,13 @@
 import Foundation
+import KurzKit
 import WebRTC
 
-/// A sala ligada: a MediaSession com o SFU, os participantes (consultados a cada 2 s ao manager), as tracks remotas e o
-/// volume de cada pessoa. Se a ligação ao SFU cai fica na sala e tenta voltar a cada 2 s; só desiste passados 30 s.
+/// A sala de voz ligada: a MediaSession com o SFU (entrada por `joinVoice`), as tracks remotas e o volume de cada pessoa.
+/// Quem está na sala vem do gateway (`voice.state`), não daqui. Se a ligação ao SFU cai fica na sala e tenta voltar a cada 2 s
+/// (`joinVoice` de novo: o token de mídia é de uso único); só desiste passados 30 s.
 @MainActor
 final class RoomSession: ObservableObject {
-    /// A sala com os participantes da última consulta ao manager.
-    @Published private(set) var room: Room?
-    /// A ligação ao SFU caiu e está a tentar voltar: [room] mantém-se até conseguir ou desistir.
+    /// A ligação ao SFU caiu e está a tentar voltar: a sala mantém-se até conseguir ou desistir.
     @Published private(set) var reconnecting = false
     @Published var notice: String?
     /// Nível do microfone (0..1), medido pelo WebRTC.
@@ -17,15 +17,16 @@ final class RoomSession: ObservableObject {
     /// Volume com que se ouve cada pessoa, 0...2 (1 = normal); só vale para quem se mexeu.
     @Published private(set) var volumes: [String: Float] = [:]
 
-    let userId: String
+    private(set) var userId = ""
+    /// Avisado a cada ligação ao SFU conseguida (a primeira e as reconexões): é a hora de publicar mute/câmara/partilha no gateway.
+    var onJoined: (() -> Void)?
     private let local: LocalMedia
     private var session: MediaSession?
     private var videoTracks: [String: RTCVideoTrack] = [:]
     private var audioTracks: [String: RTCAudioTrack] = [:]
     private var levelLoop: Task<Void, Never>?
 
-    init(userId: String, local: LocalMedia) {
-        self.userId = userId
+    init(local: LocalMedia) {
         self.local = local
     }
 
@@ -39,23 +40,19 @@ final class RoomSession: ObservableObject {
         for (key, t) in audioTracks where key.hasPrefix(userId + ":") { t.source.volume = Double(vol) }
     }
 
-    /// Entra na sala e mantém-na até o Task ser cancelado ou a ligação se perder de vez. Não lança: as falhas ficam em [notice].
-    func run(base: String, roomId: String, name: String) async {
+    /// Entra no canal de voz e mantém-no até o Task ser cancelado ou a ligação se perder de vez. Não lança: as falhas ficam em [notice].
+    func run(api: KurzAPI, channelId: String, userId: String) async {
+        self.userId = userId
         defer { leave() }
-        guard await open(base: base, roomId: roomId, name: name, report: true) else { return }
+        guard await open(api: api, channelId: channelId, report: true) else { return }
         var lostSince: Date?
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             if Task.isCancelled { return }
-            if !reconnecting {
-                lostSince = nil
-                // falha pontual: fica a última lista
-                if let r = try? await Manager(base).room(roomId), !Task.isCancelled { room = r }
-                continue
-            }
+            if !reconnecting { lostSince = nil; continue }
             let since = lostSince ?? Date()
             lostSince = since
-            if await !reconnect(base: base, roomId: roomId, name: name) && Date().timeIntervalSince(since) > 30 {
+            if await !reconnect(api: api, channelId: channelId) && Date().timeIntervalSince(since) > 30 {
                 notice = "Sem ligação ao servidor há mais de 30 s. Saíste da sala."
                 return
             }
@@ -65,26 +62,23 @@ final class RoomSession: ObservableObject {
     func leave() {
         local.onTrack = nil
         dropSession()
-        room = nil
         reconnecting = false
     }
 
     // --- ligação ---
 
-    private func reconnect(base: String, roomId: String, name: String) async -> Bool {
+    private func reconnect(api: KurzAPI, channelId: String) async -> Bool {
         dropSession()
-        let ok = await open(base: base, roomId: roomId, name: name, report: false)
+        let ok = await open(api: api, channelId: channelId, report: false)
         if ok { reconnecting = false }
         return ok
     }
 
     private final class Box { weak var session: MediaSession? }
 
-    private func open(base: String, roomId: String, name: String, report: Bool) async -> Bool {
+    private func open(api: KurzAPI, channelId: String, report: Bool) async -> Bool {
         do {
-            let manager = Manager(base)
-            let current = try await manager.room(roomId)
-            let voice = try await manager.join(roomId, userId: userId, name: name)
+            let voice = try await api.joinVoice(channelId: channelId)
             let box = Box()
             let s = MediaSession(voice: voice, userId: userId, factory: MediaEngine.shared.factory,
                 onRemote: { [weak self] track, added, uid, source in
@@ -102,16 +96,12 @@ final class RoomSession: ObservableObject {
             box.session = s
             try await s.connect()
             session = s
-            room = current
             // a captura já ligada entra agora; o resto entra/sai quando os botões mudarem
             for (source, track) in local.tracks { s.publish(source, track) }
             local.onTrack = { [weak s] source, track in s?.publish(source, track) }
             let local = self.local
             levelLoop = Task { [weak self, weak s] in
-                var tick = 0
                 while !Task.isCancelled {
-                    tick += 1
-                    if tick % 14 == 1, let s { print("KURZ-AUDIO", await s.debugLine(), "micTrack=\(local.mic.track != nil)") }
                     try? await Task.sleep(nanoseconds: 150_000_000)
                     guard let s else { return }
                     let level = await s.audioLevel()
@@ -119,14 +109,24 @@ final class RoomSession: ObservableObject {
                 }
             }
             reconnecting = false
+            onJoined?()
             return true
         } catch {
-            if report && !(error is CancellationError) { notice = error.localizedDescription }
+            if report && !(error is CancellationError) { notice = Self.message(error) }
             return false
         }
     }
 
-    /// Larga a ligação ao SFU (e as tracks remotas) mas deixa [room]: é o que a UI mostra enquanto tenta voltar.
+    /// O aviso para o utilizador: sem Connect/Speak o servidor responde 403 `missing_permission`; sem voz, 501 `not_supported`.
+    private static func message(_ error: Error) -> String {
+        if let e = error as? KurzError {
+            if e.code == "missing_permission" || e.code == "forbidden" { return Msg.voiceDenied }
+            if e.code == "not_supported" { return Msg.noVoice }
+        }
+        return error.localizedDescription
+    }
+
+    /// Larga a ligação ao SFU (e as tracks remotas): é o que acontece enquanto a UI tenta voltar.
     private func dropSession() {
         local.onTrack = nil
         levelLoop?.cancel(); levelLoop = nil

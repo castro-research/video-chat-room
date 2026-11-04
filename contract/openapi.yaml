@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
   title: Kurz server contract
-  version: 0.1.0
+  version: 0.7.0
   description: |
-    The contract every Kurz server implements, whatever language it is written in. One server = one community (tenant).
+    The contract every Kurz server implements, whatever language it is written in. One server is a platform: accounts are global, and users create and join many guilds (communities).
     The client is given a base URL and talks only to what is described here. Draft: 0.x may still break between minors.
 
     REST is described by `paths`. The two WebSocket channels (`/v1/gateway`, `/v1/media`) are described by their message
@@ -14,7 +14,16 @@ info:
     - Ids are opaque strings. Timestamps are RFC 3339 UTC.
     - Errors are `ApiError`. `code` is an open set: clients treat unknown codes as a generic failure of that status.
       Known codes: unauthorized, token_expired, forbidden, not_found, validation, username_taken, registration_closed,
-      invalid_invite, rate_limited, not_supported.
+      invalid_invite, rate_limited, not_supported, missing_permission, hierarchy, invite_expired, banned, owner_cannot_leave.
+    - A guild, or a channel, the caller is not a member of (or cannot see) answers 404 `not_found`, never revealing it exists.
+    - Authorization is checked by the server on every operation. `missing_permission` (403): the caller lacks the permission bit.
+      `hierarchy` (403): the target's highest role is not below the caller's. The guild owner skips both.
+    - 0.2 describes REST only for guilds; the guild-scoped gateway events arrive with the gateway itself.
+    - 0.3 adds message editing/deleting/replies, reactions and read states over REST. Messages exist only in `text` channels (422 `validation` elsewhere).
+    - 0.4 specifies the gateway: sequence numbers, resume, permission-filtered events. Frames and events are in `gateway.md`; the `Gateway*` schemas below are the pre-0.4 shapes and are superseded by it where they differ. New capability `realtime`.
+    - 0.5 adds attachments (direct upload to object storage with pre-signed URLs) and full-text search. `Message.attachments` carries pre-signed GET URLs that expire. New capabilities `search` and `attachments`.
+    - 0.6 implements voice: join/leave/list over REST, the media token, and the `voice.state` event (see `gateway.md`). New capability `voice`, advertised only when the server has an SFU configured.
+    - 0.7 hardens 0.6 without new endpoints: text containing a NUL (`\u0000`) is rejected with 422 `validation` everywhere; a used refresh token presented within 10 s gets a sibling token instead of 401; a client that loses access to a channel gets a `channel.delete` tombstone (see `gateway.md`); upload URLs last 5 minutes; the attachment served is a server-side copy made when the message is sent; the gateway adds close codes `4011` (too many client frames) and `4012` (too many sessions).
     - Authenticated calls send `Authorization: Bearer <accessToken>`. On 401 `token_expired` the client refreshes once and retries.
     - 429 carries `Retry-After` (seconds).
     - An endpoint that belongs to a capability the server does not advertise answers 501 `not_supported`.
@@ -93,7 +102,11 @@ paths:
       operationId: refresh
       tags: [auth]
       security: []
-      summary: Rotate the refresh token and get a new access token. The old refresh token stops working.
+      summary: Rotate the refresh token and get a new access token. The old refresh token stops working, except for a 10 s grace window.
+      description: |
+        Presenting an already-used refresh token within 10 s of its use (a retry after a lost response, or a concurrent refresh)
+        returns a new sibling token of the same family instead of 401. After the window, reusing it is treated as theft and
+        revokes the whole family (401).
       requestBody:
         required: true
         content:
@@ -151,19 +164,88 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/Validation' }
 
-  /v1/members:
+  /v1/guilds:
     get:
-      operationId: listMembers
+      operationId: listMyGuilds
+      tags: [guilds]
+      summary: The guilds the caller is a member of
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuildList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      operationId: createGuild
+      tags: [guilds]
+      summary: Create a guild. The caller becomes the owner; it starts with the @everyone role and a text channel `geral`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateGuildRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guild' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    get:
+      operationId: getGuild
+      tags: [guilds]
+      summary: One guild. Members only.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guild' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      operationId: deleteGuild
+      tags: [guilds]
+      summary: Delete the guild with everything in it. Owner only (403 `forbidden` for other members).
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/guilds/{guildId}/owner:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    put:
+      operationId: transferGuildOwnership
+      tags: [guilds]
+      summary: Hand the guild to another member. Owner only. The previous owner becomes a regular member.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferOwnershipRequest' }
+      responses:
+        '204': { description: Transferred }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/members:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    get:
+      operationId: listGuildMembers
       tags: [members]
-      summary: Members sorted by name then id, with the presence status they have right now
+      summary: Members ordered by user id, with their role ids
       parameters:
-        - name: role
-          in: query
-          schema: { $ref: '#/components/schemas/Role' }
-        - name: q
-          in: query
-          description: Case-insensitive substring of name or username.
-          schema: { type: string, maxLength: 64 }
         - name: after
           in: query
           description: The `next` of the previous page.
@@ -176,12 +258,264 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MemberPage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
-  /v1/channels:
+  /v1/guilds/{guildId}/members/@me:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    delete:
+      operationId: leaveGuild
+      tags: [members]
+      summary: Leave the guild. The owner cannot (409 `owner_cannot_leave`).
+      responses:
+        '204': { description: Left }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /v1/guilds/{guildId}/members/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+      - $ref: '#/components/parameters/UserId'
+    delete:
+      operationId: kickMember
+      tags: [members]
+      summary: Kick a member (they can rejoin with an invite). Needs `kickMembers`; the target must be below the caller.
+      responses:
+        '204': { description: Kicked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/members/{userId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/RoleId'
+    put:
+      operationId: addMemberRole
+      tags: [members]
+      summary: Give a role to a member. Needs `manageRoles`; the role and the member must be below the caller. Idempotent.
+      responses:
+        '204': { description: Done }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: removeMemberRole
+      tags: [members]
+      summary: Take a role from a member. Same rules as giving it.
+      responses:
+        '204': { description: Done }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/bans:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    get:
+      operationId: listBans
+      tags: [bans]
+      summary: Banned users. Needs `banMembers`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BanList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/guilds/{guildId}/bans/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+      - $ref: '#/components/parameters/UserId'
+    put:
+      operationId: banUser
+      tags: [bans]
+      summary: Ban a user, member or not. Removes them from the guild; joining by invite answers 403 `banned` until unbanned.
+      description: Needs `banMembers`; a member target must be below the caller. Banning again updates the reason. The body is optional.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BanRequest' }
+      responses:
+        '204': { description: Banned }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: unbanUser
+      tags: [bans]
+      summary: Lift a ban. Needs `banMembers`. 404 if the user is not banned.
+      responses:
+        '204': { description: Unbanned }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/guilds/{guildId}/roles:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    get:
+      operationId: listRoles
+      tags: [roles]
+      summary: Roles by position, ascending. `@everyone` (position 0, id = guild id) is always first.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoleList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createRole
+      tags: [roles]
+      summary: Create a role at position 1 (just above @everyone). Needs `manageRoles`; the caller can only grant bits they have.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRoleRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/roles/{roleId}:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+      - $ref: '#/components/parameters/RoleId'
+    patch:
+      operationId: updateRole
+      tags: [roles]
+      summary: Rename, change permissions or move a role. Needs `manageRoles`; the role must be below the caller, and after a move still is.
+      description: '`@everyone` can only have its permissions changed. Newly added bits must be ones the caller has.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRoleRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: deleteRole
+      tags: [roles]
+      summary: Delete a role (members lose it). Needs `manageRoles`; the role must be below the caller. Not @everyone.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/guilds/{guildId}/invites:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
+    get:
+      operationId: listInvites
+      tags: [invites]
+      summary: The guild's invites. Needs `createInvite`.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InviteList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createInvite
+      tags: [invites]
+      summary: Create an invite code, optionally expiring and limited in uses. Needs `createInvite`. The body is optional.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateInviteRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invite' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/invites/{code}:
+    parameters:
+      - $ref: '#/components/parameters/InviteCode'
+    get:
+      operationId: previewInvite
+      tags: [invites]
+      summary: Which guild an invite leads to, without joining.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitePreview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: invalid_invite, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '410': { description: invite_expired (time passed or all uses spent), content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+    delete:
+      operationId: revokeInvite
+      tags: [invites]
+      summary: Delete an invite. Its creator, or an Administrator.
+      responses:
+        '204': { description: Revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/invites/{code}/join:
+    parameters:
+      - $ref: '#/components/parameters/InviteCode'
+    post:
+      operationId: joinGuild
+      tags: [invites]
+      summary: Join the guild an invite leads to. Joining a guild you are already in succeeds and spends no use.
+      responses:
+        '200':
+          description: Joined (or already a member)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Guild' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: banned, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '404': { description: invalid_invite, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+        '410': { description: invite_expired, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } }
+
+  /v1/guilds/{guildId}/channels:
+    parameters:
+      - $ref: '#/components/parameters/GuildId'
     get:
       operationId: listChannels
       tags: [channels]
-      summary: Categories with their channels, in display order. Voice channels carry who is connected right now.
+      summary: The channels the caller can see (`viewChannel`), flat. Group by `parentId`, order by `position`.
       responses:
         '200':
           description: OK
@@ -189,6 +523,136 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ChannelList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      operationId: createChannel
+      tags: [channels]
+      summary: Create a text or voice channel, or a category, at the end of its group. Needs `manageChannels` in the guild.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateChannelRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/channels/{channelId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      operationId: getChannel
+      tags: [channels]
+      summary: One channel. 404 when the caller cannot see it.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateChannel
+      tags: [channels]
+      summary: Rename, move to another category (`parentId`, null for none) and/or reorder inside the group (`position`, 0-based). Needs `manageChannels` in the channel, and in the target category.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateChannelRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Channel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: deleteChannel
+      tags: [channels]
+      summary: Delete a channel. Deleting a category frees its channels (they lose the `parentId`). Needs `manageChannels` in the channel.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channels/{channelId}/overrides:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      operationId: listChannelOverrides
+      tags: [channels]
+      summary: Permission overrides of the channel. Needs `manageChannels` in the channel.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OverrideList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channels/{channelId}/overrides/{kind}/{targetId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - name: kind
+        in: path
+        required: true
+        schema: { type: string, enum: [role, member] }
+      - name: targetId
+        in: path
+        required: true
+        description: A role id (`@everyone` is the guild id) or a user id.
+        schema: { type: string }
+    put:
+      operationId: setChannelOverride
+      tags: [channels]
+      summary: Set the allow/deny bits of a role or member in this channel. Both zero removes the override.
+      description: |
+        Needs `manageChannels` in the channel. A role target must be below the caller (`@everyone` always can be edited);
+        a member target must be below the caller, or be the caller. `allow` can only hold bits the caller has in the channel.
+        `administrator` cannot appear in an override, and a bit cannot be both allowed and denied.
+
+        Resolution for a member: base permissions (@everyone + roles), then the @everyone override, then the union of the
+        deny and allow of their roles' overrides, then the member's own override. Owner and Administrator skip it all.
+        Without `viewChannel` the member has nothing in the channel; without `connect` there is no `speak`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OverrideRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Override' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: deleteChannelOverride
+      tags: [channels]
+      summary: Remove an override. Same rules as setting it.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /v1/channels/{channelId}/messages:
     parameters:
@@ -196,12 +660,23 @@ paths:
     get:
       operationId: listMessages
       tags: [messages]
-      summary: One page of history, oldest to newest
-      description: The page is the newest `limit` messages older than `before` (or the newest overall when `before` is absent).
+      summary: One page of history, always oldest to newest
+      description: |
+        Cursor pagination on message ids, which grow with time. At most one of `before`, `after` and `around`.
+        - none: the newest `limit` messages.
+        - `before`: the newest `limit` messages older than the cursor (cursor excluded).
+        - `after`: the oldest `limit` messages newer than the cursor (cursor excluded).
+        - `around`: about half of `limit` older than the cursor, the rest from the cursor on (cursor included if it still exists).
+        The cursor need not exist anymore (deleted messages).
       parameters:
         - name: before
           in: query
-          description: A message id; only older messages are returned.
+          schema: { type: string }
+        - name: after
+          in: query
+          schema: { type: string }
+        - name: around
+          in: query
           schema: { type: string }
         - $ref: '#/components/parameters/Limit'
       responses:
@@ -211,12 +686,13 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/MessagePage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
     post:
       operationId: sendMessage
       tags: [messages]
       summary: Post a message. It is also pushed to everyone (sender included) as `message.create`.
+      description: Needs `sendMessages` in the channel. `replyToId` must be a message of the same channel. `attachmentIds` links uploaded files to the message in the same transaction; the response and the `message.create` event carry them with fresh download URLs.
       requestBody:
         required: true
         content:
@@ -234,13 +710,96 @@ paths:
         '422': { $ref: '#/components/responses/Validation' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /v1/channels/{channelId}/messages/{messageId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+    patch:
+      operationId: editMessage
+      tags: [messages]
+      summary: Edit a message. Only its author can (403 `forbidden` otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EditMessageRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+    delete:
+      operationId: deleteMessage
+      tags: [messages]
+      summary: Delete a message. The author can; anyone else needs `manageMessages` (403 `missing_permission`).
+      description: Deletion is permanent. Its reactions go with it, and replies to it lose `replyToId`.
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channels/{channelId}/messages/{messageId}/reactions/{emoji}/@me:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - $ref: '#/components/parameters/Emoji'
+    put:
+      operationId: addReaction
+      tags: [messages]
+      summary: React with an emoji. Idempotent. Needs `sendMessages`.
+      description: A message takes at most 20 different emojis (422 `validation`).
+      responses:
+        '204': { description: Reacted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
+
+  /v1/channels/{channelId}/messages/{messageId}/reactions/{emoji}/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+      - $ref: '#/components/parameters/MessageId'
+      - $ref: '#/components/parameters/Emoji'
+      - name: userId
+        in: path
+        required: true
+        description: '`@me` removes the caller''s own reaction. Another user''s needs `manageMessages`.'
+        schema: { type: string }
+    delete:
+      operationId: removeReaction
+      tags: [messages]
+      summary: Remove a reaction. Idempotent.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /v1/channels/{channelId}/read:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    get:
+      operationId: getChannelReadState
+      tags: [messages]
+      summary: The caller's read state in the channel
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReadState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
     post:
       operationId: markRead
       tags: [messages]
-      summary: Mark the channel as read up to a message. Resets `unread` for the caller.
-      parameters:
-        - $ref: '#/components/parameters/ChannelId'
+      summary: Mark the channel as read up to a message of that channel. Never moves backwards.
       requestBody:
         required: true
         content:
@@ -250,37 +809,103 @@ paths:
         '204': { description: Marked }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
 
-  /v1/uploads:
-    post:
-      operationId: upload
+  /v1/guilds/{guildId}/read:
+    get:
+      operationId: getGuildReadStates
       tags: [messages]
-      summary: Upload a file to attach to a message (capability `attachments`)
-      description: The returned id goes in `SendMessageRequest.attachmentIds`. Servers may discard uploads never attached.
+      summary: The caller's read state in every text channel of the guild they can see
+      parameters:
+        - $ref: '#/components/parameters/GuildId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReadState' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/channels/{channelId}/attachments:
+    parameters:
+      - $ref: '#/components/parameters/ChannelId'
+    post:
+      operationId: requestUpload
+      tags: [messages]
+      summary: Ask to upload a file to attach to a message (capability `attachments`)
+      description: |
+        The bytes never go through the API. Flow: 1) this call validates name, type and size and answers with an `uploadUrl`;
+        2) the client sends the file with `PUT {uploadUrl}` (body = the raw bytes, exactly `size` of them) before `expiresAt`;
+        3) the client posts the message with `attachmentIds`. The server then checks that the object exists with the declared size.
+        Needs `sendMessages` in the channel. Allowed types: image/png, image/jpeg, image/gif, image/webp, video/mp4, video/webm,
+        audio/mpeg, audio/ogg, audio/wav, audio/webm, application/pdf, text/plain, application/zip (parameters such as `charset` are ignored).
+        Maximum size: 26214400 bytes (25 MiB). A message takes at most 10 attachments.
+        An upload never attached to a message is discarded by the server after about an hour.
+        An attachment belongs to the channel and the user that requested it.
       requestBody:
         required: true
         content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [file]
-              properties:
-                file: { type: string, format: binary }
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadRequest' }
       responses:
         '201':
           description: Created
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Attachment' }
+              schema: { $ref: '#/components/schemas/UploadTicket' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Validation' }
-        '501': { description: not_supported }
+        '501': { description: 'not_supported: the server has no object storage (no `attachments` capability).' }
+
+  /v1/guilds/{guildId}/search:
+    get:
+      operationId: searchMessages
+      tags: [messages]
+      summary: Full-text search over the messages of a guild (capability `search`)
+      description: |
+        Searches only text channels the caller can see (`viewChannel`); messages of hidden channels never show up.
+        `q` uses web-search syntax: words are ANDed, `"a phrase"`, `or`, and `-word` to exclude. Matching is by stem in Portuguese
+        (stop words are ignored; a query made only of stop words matches nothing).
+        Results are newest first and paginated by cursor: pass the previous page's `nextCursor` as `cursor`; there is no
+        `nextCursor` on the last page. Naming a channel the caller cannot see (or that is not a text channel of this guild) is 404.
+        Edited messages are searched by their current text; deleted ones disappear.
+      parameters:
+        - $ref: '#/components/parameters/GuildId'
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - { name: channelId, in: query, schema: { type: string }, description: Only this channel. }
+        - { name: authorId, in: query, schema: { type: string }, description: Only messages by this user. }
+        - { name: highlight, in: query, schema: { type: boolean, default: false }, description: 'Fill `highlight` with an excerpt in which matches are wrapped in U+27E6 and U+27E7.' }
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
 
   /v1/channels/{channelId}/voice/join:
     post:
       operationId: joinVoice
       tags: [voice]
-      summary: Get what is needed to connect to a voice channel's media. Leaves any other voice channel first.
+      summary: Get what is needed to connect to a voice channel's media (capability `voice`). Leaves any other voice channel first.
+      description: |
+        Needs `viewChannel` (else 404) and `connect` (else 403 `missing_permission`); a text channel answers 422 `validation`.
+        Without `speak` the caller joins muted and stays muted (`voice.state.set` cannot unmute). `media.token` is a JWT
+        valid 60 s and accepted once by the SFU: ask for a new one (this same call) to reconnect. Calling it again for the channel
+        you are already in changes no state and emits no event. Moving to another channel emits a `voice.state` leave for the old one.
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       responses:
@@ -293,18 +918,43 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/Validation' }
+        '501': { description: 'not_supported: the server has no SFU configured (no `voice` capability).' }
+
+  /v1/channels/{channelId}/voice:
+    get:
+      operationId: listVoiceParticipants
+      tags: [voice]
+      summary: Who is in a voice channel right now (capability `voice`). Needs `viewChannel`.
+      parameters:
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [participants]
+                properties:
+                  participants:
+                    type: array
+                    items: { $ref: '#/components/schemas/VoiceParticipant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/Validation' }
         '501': { description: not_supported }
 
   /v1/channels/{channelId}/voice/leave:
     post:
       operationId: leaveVoice
       tags: [voice]
-      summary: Leave the voice channel. Closing the media socket has the same effect.
+      summary: Leave the voice channel (capability `voice`). Idempotent. The server does not notice a closed media socket by itself; call this, or stop sending gateway heartbeats (the voice state expires after 3 minutes without one).
       parameters:
         - $ref: '#/components/parameters/ChannelId'
       responses:
-        '204': { description: Left }
+        '204': { description: Left (or was not in that channel) }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { description: not_supported }
 
   /v1/gateway:
     get:
@@ -313,12 +963,12 @@ paths:
       security: []
       summary: WebSocket for realtime events (no token in the URL; the first frame authenticates)
       description: |
-        Upgrade to WebSocket. Frames are JSON `{ "op": string, "d": object }`.
-        Client to server: `GatewayClientMessage`. Server to client: `GatewayServerMessage`.
-        The first client frame must be `identify` within 10 s, else the server closes with 4001.
-        Close 4001 = bad or expired token: refresh the access token and reconnect once.
-        Liveness is WebSocket ping/pong: the server pings at least every 30 s and the client reconnects after 60 s of silence.
-        There is no resume. After reconnecting the client refetches what it missed over REST.
+        Upgrade to WebSocket. Frames are JSON `{ "op": string, "t"?: string, "seq"?: integer, "d"?: object }`.
+        The full protocol (handshake, heartbeat, `seq`, resume, event list, filtering, close codes) is in `gateway.md`.
+        Summary: the server sends `hello`; the client sends `identify` (or `resume`) with the access token within 10 s;
+        the server answers `ready` (session id and the user's guilds) and then `dispatch` frames `{ op, t, seq, d }`
+        with a per-session `seq`. Events are filtered by permission. Close 4001 = bad or expired token.
+        Liveness is the client `heartbeat` op; 2 intervals of silence close with 4010.
       responses:
         '101': { description: Switching Protocols }
 
@@ -331,7 +981,10 @@ paths:
       description: |
         Frames are JSON `{ "op": string, "d": object }`. Client to server: `MediaClientMessage`. Server to client: `MediaServerMessage`.
         The first client frame must be `join` within 10 s, else the server closes with 4001.
-        Closing the socket leaves the voice channel.
+        Closing the socket ends the media session; the voice state (who is listed in the channel) is cleared by `voice/leave`
+        or by the lack of gateway heartbeats.
+        The `join` token is the `VoiceSession.media.token`: a JWT HS256 (`iss` `kurz-manager`, `sub` user id, `name`, `room` channel id,
+        `jti`, `exp` = 60 s, `speak`); a replayed or expired token closes with 4001.
       responses:
         '101': { description: Switching Protocols }
 
@@ -348,6 +1001,37 @@ components:
       in: path
       required: true
       schema: { type: string }
+    GuildId:
+      name: guildId
+      in: path
+      required: true
+      schema: { type: string }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    RoleId:
+      name: roleId
+      in: path
+      required: true
+      schema: { type: string }
+    InviteCode:
+      name: code
+      in: path
+      required: true
+      schema: { type: string }
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema: { type: string }
+    Emoji:
+      name: emoji
+      in: path
+      required: true
+      description: URL-encoded emoji (or short name). 1-64 bytes, no whitespace or control characters.
+      schema: { type: string }
     Limit:
       name: limit
       in: query
@@ -360,7 +1044,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
     Forbidden:
-      description: forbidden (or registration_closed / invalid_invite on register)
+      description: forbidden, missing_permission or hierarchy (or registration_closed / invalid_invite on register)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
@@ -371,6 +1055,11 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
     Validation:
       description: validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    Conflict:
+      description: conflict (owner_cannot_leave)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
@@ -392,10 +1081,6 @@ components:
         code: { type: string }
         message: { type: string, description: 'Human readable, not for matching.' }
 
-    Role:
-      type: string
-      enum: [admin, mod, member]
-
     Status:
       type: string
       description: offline is derived by the server when the user has no open gateway connection.
@@ -409,7 +1094,7 @@ components:
           type: string
           pattern: '^[0-9]+\.[0-9]+$'
           description: major.minor of this contract. A client refuses a server whose major differs.
-          example: '0.1'
+          example: '0.7'
         name: { type: string }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated icon when there is no `iconUrl`. }
         iconUrl: { type: string, format: uri }
@@ -418,21 +1103,20 @@ components:
           enum: [open, invite, closed]
         capabilities:
           type: array
-          description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses.'
+          description: '`text` is mandatory. The others are optional, and absent ones never show up in channels or responses. `attachments` is advertised only when the server has object storage; `search` needs nothing but the database.'
           items:
             type: string
-            enum: [text, voice, video, screenshare, attachments]
+            enum: [text, realtime, search, voice, video, screenshare, attachments]
 
     User:
       type: object
-      required: [id, username, name, status, role]
+      required: [id, username, name, status]
       properties:
         id: { type: string }
         username: { type: string, description: 'Unique, lowercase [a-z0-9_]{3,32}.' }
         name: { type: string, minLength: 1, maxLength: 64, description: Display name. }
         status: { $ref: '#/components/schemas/Status' }
         subtitle: { type: string, maxLength: 128, description: Custom status line. }
-        role: { $ref: '#/components/schemas/Role' }
         hue: { type: number, minimum: 0, maximum: 360, description: Color of the generated avatar when there is no `avatarUrl`. }
         avatarUrl: { type: string, format: uri }
 
@@ -475,54 +1159,215 @@ components:
         subtitle: { type: string, maxLength: 128, description: Empty string clears it. }
         hue: { type: number, minimum: 0, maximum: 360 }
 
+    # ---------- guilds ----------
+    Permissions:
+      type: integer
+      format: int64
+      description: |
+        Bitmask. 1 viewChannel, 2 sendMessages, 4 manageMessages, 8 manageChannels, 16 createInvite, 32 kickMembers,
+        64 banMembers, 128 connect, 256 speak, 512 manageRoles, 1024 administrator (all of the others, and skips channel overrides).
+      minimum: 0
+      maximum: 2047
+
+    Guild:
+      type: object
+      required: [id, name, ownerId, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 100 }
+        ownerId: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    GuildList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Guild' }
+
+    CreateGuildRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+
+    TransferOwnershipRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId: { type: string, description: Must be a member. }
+
+    Member:
+      type: object
+      required: [user, joinedAt, roleIds]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        joinedAt: { type: string, format: date-time }
+        roleIds:
+          type: array
+          description: Roles of the member, not counting the implicit @everyone.
+          items: { type: string }
+
     MemberPage:
       type: object
       required: [items, total]
       properties:
         items:
           type: array
-          items: { $ref: '#/components/schemas/User' }
-        total: { type: integer, description: 'Members matching the filters, across all pages.' }
+          items: { $ref: '#/components/schemas/Member' }
+        total: { type: integer, description: 'Members of the guild, across all pages.' }
         next: { type: string, description: Absent on the last page. }
+
+    Role:
+      type: object
+      required: [id, name, permissions, position, everyone]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 64 }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+        position: { type: integer, minimum: 0, description: 'Higher = more power. @everyone is 0.' }
+        everyone: { type: boolean }
+
+    RoleList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Role' }
+
+    CreateRoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+
+    UpdateRoleRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        permissions: { $ref: '#/components/schemas/Permissions' }
+        position: { type: integer, minimum: 1, description: 'Moves the role to this place among the non-@everyone roles; beyond the top means the top.' }
+
+    Invite:
+      type: object
+      required: [code, guildId, creatorId, uses, createdAt]
+      properties:
+        code: { type: string }
+        guildId: { type: string }
+        creatorId: { type: string }
+        maxUses: { type: integer, minimum: 1, description: Absent = unlimited. }
+        uses: { type: integer, minimum: 0 }
+        expiresAt: { type: string, format: date-time, description: Absent = never. }
+        createdAt: { type: string, format: date-time }
+
+    InviteList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Invite' }
+
+    CreateInviteRequest:
+      type: object
+      properties:
+        maxUses: { type: integer, minimum: 1, maximum: 1000000 }
+        expiresIn: { type: integer, minimum: 1, maximum: 31536000, description: Seconds from now. }
+
+    InvitePreview:
+      type: object
+      required: [code, guild]
+      properties:
+        code: { type: string }
+        expiresAt: { type: string, format: date-time }
+        guild: { $ref: '#/components/schemas/Guild' }
+
+    BanRequest:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 512 }
+
+    Ban:
+      type: object
+      required: [user, bannedBy, reason, createdAt]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        bannedBy: { type: string }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    BanList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Ban' }
 
     # ---------- channels ----------
     ChannelKind:
       type: string
-      enum: [text, voice]
+      enum: [text, voice, category]
 
     Channel:
       type: object
-      required: [id, name, kind, locked]
+      required: [id, guildId, name, kind, position]
       properties:
         id: { type: string }
-        name: { type: string }
+        guildId: { type: string }
+        name: { type: string, minLength: 1, maxLength: 100 }
         kind: { $ref: '#/components/schemas/ChannelKind' }
-        locked:
-          type: boolean
-          description: The caller may see it but not use it. Reading, posting and joining answer 403.
-        unread: { type: integer, minimum: 0, description: 'Text channels: messages after the caller''s read mark.' }
-        participants:
-          type: array
-          description: Voice channels only; who is connected right now.
-          items: { $ref: '#/components/schemas/VoiceParticipant' }
-
-    Category:
-      type: object
-      required: [id, name, channels]
-      properties:
-        id: { type: string }
-        name: { type: string }
-        channels:
-          type: array
-          items: { $ref: '#/components/schemas/Channel' }
+        parentId: { type: string, description: 'The category it sits in. Absent for categories and loose channels.' }
+        position: { type: integer, minimum: 0, description: 'Order among channels with the same `parentId`.' }
 
     ChannelList:
       type: object
-      required: [categories]
+      required: [items]
       properties:
-        categories:
+        items:
           type: array
-          items: { $ref: '#/components/schemas/Category' }
+          items: { $ref: '#/components/schemas/Channel' }
+
+    CreateChannelRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        kind: { $ref: '#/components/schemas/ChannelKind' }
+        parentId: { type: string, description: A category of the same guild. Not allowed for categories. }
+
+    UpdateChannelRequest:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        parentId: { type: string, nullable: true, description: Absent = unchanged; null = out of any category. }
+        position: { type: integer, minimum: 0, description: 'Place in the destination group; beyond the end means the end. Changing only `parentId` puts it at the end.' }
+
+    OverrideRequest:
+      type: object
+      properties:
+        allow: { $ref: '#/components/schemas/Permissions' }
+        deny: { $ref: '#/components/schemas/Permissions' }
+
+    Override:
+      type: object
+      required: [kind, targetId, allow, deny]
+      properties:
+        kind: { type: string, enum: [role, member] }
+        targetId: { type: string }
+        allow: { $ref: '#/components/schemas/Permissions' }
+        deny: { $ref: '#/components/schemas/Permissions' }
+
+    OverrideList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Override' }
 
     # ---------- messages ----------
     Attachment:
@@ -530,45 +1375,121 @@ components:
       required: [id, url, contentType]
       properties:
         id: { type: string }
-        url: { type: string, format: uri }
+        url: { type: string, format: uri, description: 'Pre-signed GET. It expires (1 hour): refetch the message for a fresh one. Not for hot-linking or long-term storage.' }
         contentType: { type: string }
-        name: { type: string }
-        size: { type: integer }
-        width: { type: integer, description: 'Pixels, for images and video.' }
+        name: { type: string, description: Original file name. }
+        size: { type: integer, description: Bytes. }
+        width: { type: integer, description: 'Pixels, for images and video. The server does not fill it yet.' }
         height: { type: integer }
+
+    UploadRequest:
+      type: object
+      required: [filename, contentType, size]
+      properties:
+        filename: { type: string, minLength: 1, maxLength: 255, description: 'No path separators or control characters.' }
+        contentType: { type: string, example: image/png }
+        size: { type: integer, minimum: 1, maximum: 26214400 }
+
+    UploadTicket:
+      type: object
+      required: [id, uploadUrl, method, expiresAt]
+      properties:
+        id: { type: string, description: Goes in `SendMessageRequest.attachmentIds`. }
+        uploadUrl: { type: string, format: uri, description: Pre-signed URL; send the file bytes to it. }
+        method: { type: string, enum: [PUT] }
+        expiresAt: { type: string, format: date-time, description: 'About 5 minutes ahead. After that, request a new upload.' }
+        name: { type: string }
+        contentType: { type: string, description: The normalized type. }
+        size: { type: integer }
+
+    SearchResult:
+      type: object
+      required: [id, channelId, author, createdAt, text]
+      properties:
+        id: { type: string, description: The message id. }
+        channelId: { type: string }
+        author:
+          type: object
+          required: [id, username, name]
+          properties:
+            id: { type: string }
+            username: { type: string }
+            name: { type: string }
+        createdAt: { type: string, format: date-time }
+        text: { type: string }
+        highlight: { type: string, description: 'Only with `highlight=true`. Plain text (not HTML) with matches between U+27E6 and U+27E7.' }
+
+    SearchPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SearchResult' }
+        nextCursor: { type: string, description: Absent on the last page. }
 
     Message:
       type: object
-      required: [id, channelId, author, createdAt, text, attachments]
+      required: [id, channelId, author, createdAt, text, attachments, reactions]
       properties:
         id: { type: string }
         channelId: { type: string }
         author: { $ref: '#/components/schemas/User' }
         createdAt: { type: string, format: date-time }
+        editedAt: { type: string, format: date-time, description: Present once the message was edited. }
         text: { type: string }
+        replyToId: { type: string, description: The message this one answers. Absent when it is not a reply or the original was deleted. }
+        reactions:
+          type: array
+          items: { $ref: '#/components/schemas/Reaction' }
         attachments:
           type: array
           items: { $ref: '#/components/schemas/Attachment' }
         nonce: { type: string, description: "Echo of the sender's nonce, so the sender can match it with its optimistic copy. Only present on the sender's own message." }
 
+    Reaction:
+      type: object
+      required: [emoji, count, me]
+      properties:
+        emoji: { type: string }
+        count: { type: integer, minimum: 1 }
+        me: { type: boolean, description: The caller reacted with this emoji. }
+
     MessagePage:
       type: object
-      required: [items, hasMore]
+      required: [items, hasMore, hasNewer]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/Message' }
         hasMore: { type: boolean, description: There are older messages than the first item. }
+        hasNewer: { type: boolean, description: There are newer messages than the last item. }
 
-    SendMessageRequest:
+    EditMessageRequest:
       type: object
       required: [text]
       properties:
-        text: { type: string, maxLength: 4000, description: May be empty only when `attachmentIds` is not. }
+        text: { type: string, minLength: 1, maxLength: 4000 }
+
+    ReadState:
+      type: object
+      required: [channelId, unread]
+      properties:
+        channelId: { type: string }
+        lastReadMessageId: { type: string, description: Absent when the caller never read the channel. }
+        unread: { type: integer, description: 'Messages newer than `lastReadMessageId` by other authors, capped at 1000.' }
+
+    SendMessageRequest:
+      type: object
+      properties:
+        text: { type: string, maxLength: 4000, description: 'May be empty or omitted only when `attachmentIds` is not empty; otherwise it is required and non-blank.' }
+        replyToId: { type: string }
         nonce: { type: string, maxLength: 64 }
         attachmentIds:
           type: array
+          maxItems: 10
           items: { type: string }
+          description: 'Uploads from `requestUpload` that were already sent. They must be pending, requested by the caller for this channel, and their object must exist with the declared size, else 422. 501 without the `attachments` capability.'
 
     ReadRequest:
       type: object
@@ -708,7 +1629,7 @@ components:
 
     MemberUpdateEvent:
       type: object
-      description: A member joined, or changed name, subtitle, role, avatar or status. Upsert by `user.id`.
+      description: A member joined, or changed name, subtitle, avatar or status. Upsert by `user.id`.
       required: [op, d]
       properties:
         op: { type: string, enum: [member.update] }

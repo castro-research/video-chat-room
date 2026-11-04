@@ -1,8 +1,10 @@
+import KurzKit
 import SwiftUI
 
 /// A sala ligada: grelha de mosaicos (pessoas e ecrãs partilhados) com a barra de controlos; clicar num mosaico dá-lhe foco.
 struct VoiceRoomView: View {
     @EnvironmentObject var app: AppModel
+    @EnvironmentObject var wm: WorkspaceModel  // o roster de voz vem do gateway: a vista refaz-se com ele
     @Binding var sharePicker: Bool
     @State private var focus: String?
 
@@ -10,21 +12,21 @@ struct VoiceRoomView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "speaker.wave.2").foregroundColor(P.textMuted)
-                Text(app.shownRoom?.name ?? "").font(.system(size: 15, weight: .semibold)).foregroundColor(P.text)
+                Text(app.voiceChannel?.name ?? "").font(.system(size: 15, weight: .semibold)).foregroundColor(P.text)
                 Spacer()
             }.padding(.horizontal, 16).frame(height: 48)
             Divider().overlay(P.border)
-            if let room = app.shownRoom { grid(room) } else { Spacer() }
+            if let ch = app.voiceChannel { grid(ch) } else { Spacer() }
             ControlsBar(sharePicker: $sharePicker)
         }.background(P.main)
     }
 
-    private func grid(_ room: Room) -> some View {
-        let people = app.people(in: room)
-        var tiles: [(Tile, Participant)] = []
+    private func grid(_ channel: Channel) -> some View {
+        let people = app.people(in: channel.id)
+        var tiles: [(Tile, VoiceParticipant)] = []
         for p in people {
-            tiles.append((Tile(userId: p.userId, name: p.name, kind: .person), p))
-            if p.screen { tiles.append((Tile(userId: p.userId, name: p.name, kind: .screen), p)) }
+            tiles.append((Tile(userId: p.id, name: p.user.name, kind: .person), p))
+            if p.sharing { tiles.append((Tile(userId: p.id, name: p.user.name, kind: .screen), p)) }
         }
         let main = tiles.first { $0.0.id == focus }
         return Group {

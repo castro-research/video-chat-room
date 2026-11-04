@@ -1,0 +1,10 @@
+# O mesmo do kind, com o rate limit desligado (o gerador de carga vem de um IP só).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kind
+configMapGenerator:
+  - name: kurz-config
+    behavior: merge
+    literals:
+      - KURZ_RATELIMIT=off

@@ -1,26 +1,45 @@
-# Kurz server contract (v0.1, draft)
+# Kurz server contract (v0.7, draft)
 
-What every Kurz server implements, in any language. One server = one community (tenant); the client is given a base URL
-and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
+What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
+global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
 
-`openapi.yaml` is the single source of truth: REST paths, plus the WebSocket frames as schemas (`Gateway*`, `Media*`).
-Per-endpoint rules and error codes are in it. This file has what a schema can't say: the flows.
+`openapi.yaml` is the single source of truth for REST. The realtime gateway protocol (frames, `seq`, resume, events,
+close codes) is specified in [`gateway.md`](gateway.md); the media WebSocket frames are schemas in `openapi.yaml` (`Media*`).
+Per-endpoint rules and error codes are in the OpenAPI file. This file has what a schema can't say: the flows.
 
 ## Connecting
 
 1. The user types a base URL. The client `GET {base}/.well-known/kurz`, refuses a different `contract` major, hides what
    `capabilities` lacks, and shows the sign-up form according to `registration`.
 2. `POST /v1/auth/register` or `/login` gives a `Session`. Refresh with `/v1/auth/refresh`; on 401 `token_expired` refresh once and retry.
-3. Load the UI: `GET /v1/channels`, `GET /v1/members?role=admin`, `GET /v1/members`, `GET /v1/channels/{id}/messages`.
-4. Open `{base}/v1/gateway` (WebSocket, `ws`/`wss` from the base scheme), send `identify` with the access token, wait for `ready`.
-   From then on apply events: `message.create`, `member.update`/`remove`, `voice.state`, `voice.speaking`.
-   No resume: after a reconnect, refetch the open channel's messages and the channel list.
+3. Load the UI: `GET /v1/guilds`, then for the open guild `GET /v1/guilds/{id}/channels`, `GET /v1/guilds/{id}/members`, `GET /v1/guilds/{id}/roles`,
+   then `GET /v1/channels/{id}/messages`. To join a guild: `GET /v1/invites/{code}` to preview, `POST /v1/invites/{code}/join`.
+4. If `capabilities` has `realtime`, open `{base}/v1/gateway` (WebSocket, `ws`/`wss` from the base scheme), send `identify` with the
+   access token, wait for `ready`, then load the UI over REST. Apply `dispatch` events idempotently. After a drop, `resume` with the
+   last `seq`; on `invalid_session`, `identify` again and refetch. See `gateway.md`.
 5. Send messages with `POST /v1/channels/{id}/messages`, with a `nonce`. The `message.create` that comes back carries the
    same `nonce`, which is how the sender swaps its optimistic copy for the real one.
 
+## Refresh token rotation
+
+Each `/v1/auth/refresh` spends the presented refresh token and returns a new one; always store the newest. If the response is
+lost, retry with the same (old) token: within **10 s** of its first use the server answers 200 with a **sibling** token of the same
+family (the token minted by the lost response is also still valid, so nothing logs the client out). Trade-off: during that window a
+used token still buys one extra live token, which is why it is short; presenting a used token **after** the window is treated as theft
+and revokes the whole family (401, every device must sign in again). Clients should therefore retry a lost refresh promptly and never
+keep replaying an old token.
+
+## Rate limiting
+
+Servers rate limit with token buckets: `POST /v1/auth/*` per client IP, every other write (`POST`/`PUT`/`PATCH`/`DELETE`) per user. Reads are not limited.
+Over the limit the server answers `429` with `{ "code": "rate_limited" }` and `Retry-After` (seconds, at least 1). Clients wait that long before
+retrying (never faster than once per second) and do not retry in a tight loop. Limits are per server replica, so the exact threshold varies; do not hard-code it.
+
 ## Voice
 
-1. `POST /v1/channels/{id}/voice/join` returns `media.url`, `media.token`, `iceServers` and who is already there.
+0. Only if `capabilities` has `voice`; otherwise the voice endpoints answer 501 `not_supported`.
+1. `POST /v1/channels/{id}/voice/join` returns `media.url`, `media.token` (JWT valid 60 s, single use), `iceServers` and who is already there.
+   It needs `connect` on the channel (without `speak` you join muted). To reconnect the media socket, call it again for a fresh token.
 2. Open `media.url` (WebSocket), send `join` with `media.token`, wait for `joined`.
 3. One `RTCPeerConnection` with those `iceServers`. For each local track: send `publish { trackId, source }`, then `offer`.
    The server answers; ICE candidates trickle both ways as `candidate`.
@@ -28,17 +47,36 @@ Per-endpoint rules and error codes are in it. This file has what a schema can't 
    offer at once) the client is the polite peer: it rolls back and answers the server's offer.
 5. Every forwarded track has msid stream id = the publisher's user id and track id = `<userId>:<source>`
    (`mic`, `camera`, `screen`, `screenAudio`). That is how a client attaches a remote track to a tile.
-6. Mute, camera and share: stop or start the track and send `voice.state.set` on the gateway. Everyone receives `voice.state`.
-7. Leave with `POST .../voice/leave` or by closing the media socket.
+6. Mute, camera and share: stop or start the track and send `voice.state.set` on the gateway. Everyone who sees the channel receives `voice.state`.
+   `GET /v1/channels/{id}/voice` lists who is in a channel; `ready.d.voice` carries the whole current state at connect time.
+7. Leave with `POST .../voice/leave` (and close the media socket). Keep sending gateway heartbeats while in voice: 3 minutes without one drops you from the state.
+   Leaving the guild, being kicked or banned also removes you from the state. Joining another channel moves you.
 
 Servers MUST support Opus for audio and VP8 for video (H.264 optional).
 
-## Left out of 0.1 on purpose
+## Guilds, roles and permissions
 
-- Creating or editing channels, roles and bans: the server owner does it however the implementation allows. Add when a client needs it.
-- Editing and deleting messages, reactions, threads, typing indicators.
+- Creating a guild makes the caller its owner, with the `@everyone` role (its id is the guild id, position 0) and a text channel `geral`.
+- A member's permissions are the union of `@everyone` and their roles. `administrator` means all; the owner is above every check.
+- A channel can override that per role and member (`allow`/`deny`). Order: @everyone override, then roles, then the member.
+  A channel the member cannot `viewChannel` is hidden: absent from lists and 404 on direct access.
+- Hierarchy: roles have a `position`; you manage a role or member only if your highest role is strictly above theirs.
+  You also cannot grant a permission bit you do not have.
+- Invites are codes with optional expiry and use limit. Banned users get 403 `banned`; spent or expired codes get 410 `invite_expired`.
+
+## Attachments and search (0.5)
+
+- Attachments (capability `attachments`, only when the server has object storage): `POST /v1/channels/{id}/attachments` with name, type and size
+  returns an `uploadUrl`; `PUT` the bytes to it directly; then `POST .../messages` with `attachmentIds` (text may be empty).
+  `Message.attachments[].url` is a pre-signed GET that expires after 1 hour: refetch the message when it does. A server without
+  object storage answers 501 `not_supported`.
+- Search (capability `search`): `GET /v1/guilds/{id}/search?q=...`, newest first, cursor-paginated, limited to channels the caller can see.
+
+## Left out of 0.7 on purpose
+
+- Threads, typing indicators, search ranking by relevance and image dimensions on attachments.
 - Federation between servers, and any login other than username and password.
-- Resuming the gateway and simulcast/layer selection: clients refetch; one video layer per publisher.
+- Simulcast/layer selection: one video layer per publisher. Presence, typing and `voice.speaking` on the gateway. The SFU does not enforce `speak` or kick a revoked user from an open media session; the server only stops issuing tokens and clears the state.
 
 ## Tooling
 

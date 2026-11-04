@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: kurz
+      POSTGRES_PASSWORD: kurz
+      POSTGRES_DB: kurz
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kurz"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - kurzdb:/var/lib/postgresql  # PG18+: PGDATA em /var/lib/postgresql/18/docker
+  # S3 local para os anexos: SeaweedFS (master + volume + filer + gateway S3 num processo só), tag pinada.
+  # Credenciais de DEV vêm de deploy/seaweedfs/s3.json (identity kurzdev com Admin: o servidor cria o bucket na subida).
+  # S3 do container na 8333, publicada no host em 8333; o endpoint público das URLs pré-assinadas tem que ser o host
+  # que o cliente alcança (a assinatura SigV4 cobre o Host).
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json", "-volume.max=50", "-master.volumeSizeLimitMB=128"]
+    ports:
+      - "8333:8333"
+    volumes:
+      - kurzs3:/data
+      - ./deploy/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+volumes:
+  kurzdb:
+  kurzs3:
