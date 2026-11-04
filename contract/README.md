@@ -1,4 +1,4 @@
-# Kurz server contract (v0.6, draft)
+# Kurz server contract (v0.7, draft)
 
 What every Kurz server implements, in any language. One server is a platform hosting many guilds (communities): accounts are
 global, any user creates a guild and invites others. The client is given a base URL and talks only to what `openapi.yaml` describes. Draft: 0.x may still break between minors.
@@ -72,7 +72,7 @@ Servers MUST support Opus for audio and VP8 for video (H.264 optional).
   object storage answers 501 `not_supported`.
 - Search (capability `search`): `GET /v1/guilds/{id}/search?q=...`, newest first, cursor-paginated, limited to channels the caller can see.
 
-## Left out of 0.6 on purpose
+## Left out of 0.7 on purpose
 
 - Threads, typing indicators, search ranking by relevance and image dimensions on attachments.
 - Federation between servers, and any login other than username and password.

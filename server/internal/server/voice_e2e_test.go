@@ -371,7 +371,7 @@ func TestVoiceAdvertisedWhenConfigured(t *testing.T) {
 	for _, c := range body["capabilities"].([]any) {
 		found = found || c == "voice"
 	}
-	if !found || body["contract"] != "0.6" {
+	if !found || body["contract"] != "0.7" {
 		t.Fatalf("discovery = %v", body)
 	}
 }

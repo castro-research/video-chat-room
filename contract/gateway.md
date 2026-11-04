@@ -1,4 +1,4 @@
-# Kurz gateway (contract 0.6)
+# Kurz gateway (contract 0.7)
 
 Realtime channel: `GET {base}/v1/gateway`, upgraded to a WebSocket (`ws`/`wss` from the base scheme). The server advertises it
 as the `realtime` capability in `/.well-known/kurz`. Every frame is a JSON text message:

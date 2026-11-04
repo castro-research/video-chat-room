@@ -33,7 +33,7 @@ const (
 	accessTTL  = 15 * time.Minute
 	refreshTTL = 30 * 24 * time.Hour
 	// contractVersion é o major.minor de contract/openapi.yaml que este servidor implementa.
-	contractVersion = "0.6"
+	contractVersion = "0.7"
 )
 
 // App é o monólito montado: o handler HTTP (inclui o WebSocket do gateway) e os workers de fundo
