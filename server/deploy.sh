@@ -4,7 +4,7 @@
 #
 # Variáveis opcionais (o padrão serve para a LAN):
 #   PUBLIC_IP               IP pelo qual o CLIENTE alcança o nó (padrão: IP da LAN)
-#   KURZ_SFU_URL            ws(s):// do /v1/media do SFU; atrás do túnel: wss://cord.kurz.fyi/v1/media (padrão: ws://$PUBLIC_IP:30081/v1/media)
+#   KURZ_SFU_URL            ws(s):// do /v1/media do SFU; atrás de um proxy/túnel: wss://<host>/v1/media (padrão: ws://$PUBLIC_IP:30081/v1/media)
 #   KURZ_S3_PUBLIC_ENDPOINT host:porta do S3 como o CLIENTE alcança (padrão: $PUBLIC_IP:30083)
 #   KURZ_TRUSTED_PROXY      true só se todo acesso passar por um proxy que sobrescreve o X-Forwarded-For
 set -eu

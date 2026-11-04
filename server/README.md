@@ -50,7 +50,7 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 
 `./deploy.sh` no nó do swarm: builda a imagem e sobe a stack `kurzserver` (`stack.yml`: kurz, Postgres 18 e SeaweedFS). Portas: `30082` (API + WebSocket) e `30083` (S3,
 que o cliente acessa direto nas URLs pré-assinadas). Os segredos nascem em `server/.env` (fora do git) e o `KURZ_SECRET` é copiado de `experimentos/.env`, porque tem de ser o do SFU.
-Atrás do túnel: `KURZ_SFU_URL=wss://cord.kurz.fyi/v1/media ./deploy.sh`. O ingress do túnel (`/etc/cloudflared/config.yml`) é configurado fora do repo e tem de apontar para a `30082`.
+Atrás de um proxy/túnel: `KURZ_SFU_URL=wss://<host>/v1/media ./deploy.sh`.
 O build roda na arquitetura do nó; de outra máquina use `docker build --platform linux/amd64 -t kurz/server:latest server/`.
 
 ### Armazenamento (S3) e Postgres no compose
