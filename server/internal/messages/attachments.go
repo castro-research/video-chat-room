@@ -138,7 +138,7 @@ func (s *Service) RequestUpload(ctx context.Context, user, channel int64, in Upl
 	if err := s.store.insertAttachment(ctx, s.pool, a); err != nil {
 		return Upload{}, err
 	}
-	url, err := s.objs.PresignPut(ctx, a.ObjectKey, UploadURLTTL)
+	url, err := s.objs.PresignPut(ctx, a.ObjectKey, a.Size, UploadURLTTL)
 	if err != nil {
 		return Upload{}, err
 	}

@@ -34,9 +34,18 @@ func contract(t *testing.T, s Store) {
 	if _, err := s.Stat(ctx, key); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stat of missing = %v", err)
 	}
-	put, err := s.PresignPut(ctx, key, time.Minute)
+	put, err := s.PresignPut(ctx, key, 5, time.Minute)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if code, _, _ := httpDo(t, http.MethodPut, put, []byte("hello world")); code != 403 { // o Content-Length assinado é 5
+		t.Fatalf("put larger than signed = %d, want 403", code)
+	}
+	if code, _, _ := httpDo(t, http.MethodPut, put, []byte("hi")); code != 403 {
+		t.Fatalf("put smaller than signed = %d, want 403", code)
+	}
+	if _, err := s.Stat(ctx, key); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a rejected put left an object: %v", err)
 	}
 	if code, _, _ := httpDo(t, http.MethodPut, put, []byte("hello")); code != 200 {
 		t.Fatalf("put = %d", code)
@@ -79,7 +88,7 @@ func TestFakeExpiryAndMethod(t *testing.T) {
 	f.SetBaseURL(srv.URL)
 	now := time.Now()
 	f.SetClock(func() time.Time { return now })
-	put, _ := f.PresignPut(context.Background(), "k", time.Minute)
+	put, _ := f.PresignPut(context.Background(), "k", 1, time.Minute)
 	if code, _, _ := httpDo(t, http.MethodGet, put, nil); code != 403 { // método errado
 		t.Fatalf("wrong method = %d", code)
 	}

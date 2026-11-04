@@ -47,8 +47,8 @@ func (f *Fake) sign(method, key string, ttl time.Duration, extra url.Values) str
 	return f.base + "/" + key + "?" + q.Encode()
 }
 
-func (f *Fake) PresignPut(_ context.Context, key string, ttl time.Duration) (string, error) {
-	return f.sign(http.MethodPut, key, ttl, nil), nil
+func (f *Fake) PresignPut(_ context.Context, key string, size int64, ttl time.Duration) (string, error) {
+	return f.sign(http.MethodPut, key, ttl, url.Values{"size": {strconv.FormatInt(size, 10)}}), nil
 }
 
 func (f *Fake) PresignGet(_ context.Context, key string, opt GetOptions, ttl time.Duration) (string, error) {
@@ -130,6 +130,10 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
+		if want, err := strconv.ParseInt(q.Get("size"), 10, 64); err != nil || r.ContentLength != want {
+			http.Error(w, "content-length differs from the signed one", http.StatusForbidden)
+			return
+		}
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"mime"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -88,8 +90,10 @@ func (s *S3) ensureBucket(ctx context.Context, region string) error {
 	return nil
 }
 
-func (s *S3) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	u, err := s.presign.PresignedPutObject(ctx, s.bucket, key, ttl)
+func (s *S3) PresignPut(ctx context.Context, key string, size int64, ttl time.Duration) (string, error) {
+	h := http.Header{}
+	h.Set("Content-Length", strconv.FormatInt(size, 10))
+	u, err := s.presign.PresignHeader(ctx, http.MethodPut, s.bucket, key, ttl, nil, h)
 	if err != nil {
 		return "", err
 	}

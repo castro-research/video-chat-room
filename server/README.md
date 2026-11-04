@@ -71,7 +71,8 @@ publica com `NOTIFY` e cada réplica entrega aos WebSockets (`GET /v1/gateway`).
 
 ## Anexos, busca e jobs
 
-- Anexos: `POST /v1/channels/{id}/attachments` → `PUT` direto no S3 → `POST .../messages` com `attachmentIds`. O servidor confere tipo (allowlist),
+- Anexos: `POST /v1/channels/{id}/attachments` → `PUT` direto no S3 → `POST .../messages` com `attachmentIds`. O `Content-Length` vai assinado na URL do `PUT`: o S3 só aceita exatamente `size` bytes
+  (qualquer outro tamanho, e `Transfer-Encoding: chunked`, dá 403), então ninguém sobe mais do que declarou. O servidor confere tipo (allowlist),
   tamanho (25 MiB) e, ao ligar na mensagem, o objeto (Stat) na mesma transação. Uploads nunca ligados são varridos pelo job `attachments.cleanup`.
 - Busca: `GET /v1/guilds/{id}/search?q=`. `tsvector` gerado com config `portuguese`, índice GIN, mais recentes primeiro, só canais visíveis.
 - Jobs: tabela `jobs` + worker `FOR UPDATE SKIP LOCKED` no mesmo binário (retry com backoff exponencial, lease para réplicas que morrem).

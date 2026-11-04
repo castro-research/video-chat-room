@@ -16,7 +16,19 @@ final class CameraCapture {
     private var capturer: RTCCameraVideoCapturer?
     private let defaults = UserDefaults.standard
 
-    static var cameras: [Camera] { RTCCameraVideoCapturer.captureDevices().map { Camera(id: $0.uniqueID, name: $0.localizedName, front: $0.position == .front) } }
+#if os(macOS)
+    /// No macOS o `RTCCameraVideoCapturer.captureDevices()` só lista a câmara embutida, então as externas (USB, iPhone por
+    /// Continuity) nunca aparecem. E a embutida com a tampa fechada continua listada, mas `isSuspended`: não abre.
+    private static func devices() -> [AVCaptureDevice] {
+        var types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
+        if #available(macOS 14, *) { types.append(.external) } else { types.append(.externalUnknown) }
+        return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: .unspecified).devices.filter { !$0.isSuspended }
+    }
+#else
+    private static func devices() -> [AVCaptureDevice] { RTCCameraVideoCapturer.captureDevices() }
+#endif
+
+    static var cameras: [Camera] { devices().map { Camera(id: $0.uniqueID, name: $0.localizedName, front: $0.position == .front) } }
 
     /// A câmara lembrada, se ainda existir.
     /// No iPhone/iPad abre sempre a frontal (a traseira é uma troca de momento, não uma preferência).
@@ -56,7 +68,7 @@ final class CameraCapture {
     }
 
     private func open(_ cap: RTCCameraVideoCapturer, deviceId: String?) async -> Bool {
-        let devices = RTCCameraVideoCapturer.captureDevices()
+        let devices = Self.devices()
         guard let device = devices.first(where: { $0.uniqueID == deviceId }) ?? devices.first(where: { $0.position == .front }) ?? devices.first, let format = Self.format(for: device) else { return false }
         do {
             try await cap.startCapture(with: device, format: format, fps: 30)

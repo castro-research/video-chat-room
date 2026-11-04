@@ -26,8 +26,9 @@ type GetOptions struct {
 }
 
 type Store interface {
-	// PresignPut devolve uma URL para o cliente enviar o objeto com PUT, válida por ttl.
-	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// PresignPut devolve uma URL para o cliente enviar o objeto com PUT, válida por ttl. O Content-Length entra na
+	// assinatura: o storage só aceita um PUT com exatamente size bytes (senão, 403), então ninguém sobe mais do que declarou.
+	PresignPut(ctx context.Context, key string, size int64, ttl time.Duration) (string, error)
 	// PresignGet devolve uma URL de download válida por ttl.
 	PresignGet(ctx context.Context, key string, opt GetOptions, ttl time.Duration) (string, error)
 	// Stat devolve o tamanho do objeto, ou ErrNotFound.
