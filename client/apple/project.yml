@@ -11,11 +11,16 @@ settingGroups:
     GENERATE_INFOPLIST_FILE: NO
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     ARCHS: arm64
+packages:
+  KurzKit:
+    path: KurzKit
 targets:
   KurzMac:
     type: application
     platform: macOS
     sources: [Sources/Shared, Sources/macOS, Resources/macOS]
+    dependencies:
+      - package: KurzKit
     info:
       path: Sources/macOS/Info.plist
       properties:
@@ -43,6 +48,8 @@ targets:
     type: application
     platform: iOS
     sources: [Sources/Shared, Sources/iOS, Resources/iOS]
+    dependencies:
+      - package: KurzKit
     info:
       path: Sources/iOS/Info.plist
       properties:
