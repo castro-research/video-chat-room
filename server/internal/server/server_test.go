@@ -98,15 +98,15 @@ func TestAuthFlowEndToEnd(t *testing.T) {
 	}
 
 	// refresh: o token antigo para de funcionar. Reapresentado logo em seguida (dentro da janela de graça)
-	// é tratado como corrida/retry: 401, mas a família continua viva. O reuso depois da janela, que
-	// derruba a família, é coberto em identity (lá o relógio é controlável).
+	// é tratado como retry de resposta perdida: ganha um sucessor irmão e a família continua viva. O reuso depois da
+	// janela, que derruba a família, é coberto em identity (lá o relógio é controlável).
 	old := sess["refreshToken"].(string)
 	status, next := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": old})
 	if status != 200 {
 		t.Fatalf("refresh = %d %v", status, next)
 	}
-	if status, _ := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": old}); status != 401 {
-		t.Fatalf("reused refresh = %d", status)
+	if status, retry := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": old}); status != 200 || retry["refreshToken"] == next["refreshToken"] {
+		t.Fatalf("retry inside grace = %d %v", status, retry)
 	}
 	if status, body := call(t, "POST", srv.URL+"/v1/auth/refresh", "", map[string]string{"refreshToken": next["refreshToken"].(string)}); status != 200 {
 		t.Fatalf("family must survive a reuse inside the grace window, got %d %v", status, body)

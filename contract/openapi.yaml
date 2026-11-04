@@ -101,7 +101,11 @@ paths:
       operationId: refresh
       tags: [auth]
       security: []
-      summary: Rotate the refresh token and get a new access token. The old refresh token stops working.
+      summary: Rotate the refresh token and get a new access token. The old refresh token stops working, except for a 10 s grace window.
+      description: |
+        Presenting an already-used refresh token within 10 s of its use (a retry after a lost response, or a concurrent refresh)
+        returns a new sibling token of the same family instead of 401. After the window, reusing it is treated as theft and
+        revokes the whole family (401).
       requestBody:
         required: true
         content:

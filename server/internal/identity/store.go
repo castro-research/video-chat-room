@@ -92,7 +92,12 @@ func (s *store) insertRefresh(ctx context.Context, r newRefresh) error {
 }
 
 // rotateRefresh gasta o token antigo e grava o novo, na mesma família, numa transação.
-// Token já usado há até `grace`: errInvalidRefresh sem revogar nada (refreshes concorrentes ou retry).
+// Token já usado há até `grace` (e ainda no prazo): é retry de resposta perdida ou refresh concorrente. O token bruto
+// do sucessor original só existe na resposta que se perdeu, então reemitimos um sucessor IRMÃO na mesma família em vez de
+// 401 (que deslogaria o cliente). Trade-off de segurança: dentro da janela (10 s) quem apresentar o token já usado
+// ganha um token vivo adicional, ou seja, a janela vale como "reuso tolerado" e um token roubado e jogado nela ganha uma
+// sessão paralela; qualquer reuso depois da janela continua revogando a família inteira e a detecção de roubo acontece
+// quando o dono (ou o ladrão) rotaciona um dos dois ramos e o outro reapresenta o seu token fora da janela.
 // Token já usado há mais que isso = reuso, mesmo se expirado: revoga a família inteira (o commit acontece
 // mesmo assim) e devolve errRefreshReused. A expiração só é checada depois do reuso.
 func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefresh, now time.Time, grace time.Duration) (int64, error) {
@@ -119,8 +124,15 @@ func (s *store) rotateRefresh(ctx context.Context, oldHash []byte, next newRefre
 	}
 	if usedAt != nil {
 		if now.Sub(*usedAt) <= grace {
-			// corrida entre refreshes concorrentes ou retry: só o vencedor leva, a família continua viva
-			return 0, errInvalidRefresh
+			if !now.Before(expiresAt) {
+				return 0, errInvalidRefresh
+			}
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at) VALUES ($1, $2, $3, $4, $5)`,
+				next.ID, userID, familyID, next.Hash, next.ExpiresAt); err != nil {
+				return 0, err
+			}
+			return userID, tx.Commit(ctx)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL`, familyID, now); err != nil {
 			return 0, err

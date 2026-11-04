@@ -20,6 +20,15 @@ Per-endpoint rules and error codes are in the OpenAPI file. This file has what a
 5. Send messages with `POST /v1/channels/{id}/messages`, with a `nonce`. The `message.create` that comes back carries the
    same `nonce`, which is how the sender swaps its optimistic copy for the real one.
 
+## Refresh token rotation
+
+Each `/v1/auth/refresh` spends the presented refresh token and returns a new one; always store the newest. If the response is
+lost, retry with the same (old) token: within **10 s** of its first use the server answers 200 with a **sibling** token of the same
+family (the token minted by the lost response is also still valid, so nothing logs the client out). Trade-off: during that window a
+used token still buys one extra live token, which is why it is short; presenting a used token **after** the window is treated as theft
+and revokes the whole family (401, every device must sign in again). Clients should therefore retry a lost refresh promptly and never
+keep replaying an old token.
+
 ## Rate limiting
 
 Servers rate limit with token buckets: `POST /v1/auth/*` per client IP, every other write (`POST`/`PUT`/`PATCH`/`DELETE`) per user. Reads are not limited.

@@ -145,21 +145,34 @@ func TestRefreshReuseRevokesTheWholeFamily(t *testing.T) {
 	wantCode(t, err, 401, "unauthorized")
 }
 
-func TestRefreshReuseInsideGraceWindowKeepsTheFamily(t *testing.T) {
+// Resposta da rotação perdida: o retry com o token antigo dentro da janela de graça devolve um sucessor irmão
+// (token novo, mesma família) em vez de 401, e os dois ramos seguem vivos.
+func TestRefreshRetryInsideGraceWindowIssuesSibling(t *testing.T) {
 	s := newTestService(t, "open")
 	advance := fixedClock(s)
 	first := register(t, s, "yuri")
-	second, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	lost, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken}) // resposta "perdida"
 	if err != nil {
 		t.Fatal(err)
 	}
-	// retry/corrida logo depois da rotação: 401, mas sem derrubar a sessão
 	advance(refreshReuseGrace / 2)
+	retry, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
+	if err != nil {
+		t.Fatalf("retry inside the grace window must succeed: %v", err)
+	}
+	if retry.RefreshToken == lost.RefreshToken || retry.RefreshToken == first.RefreshToken || retry.User.ID != first.User.ID {
+		t.Fatalf("retry must get a fresh sibling token: %+v", retry)
+	}
+	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: retry.RefreshToken}); err != nil {
+		t.Fatalf("sibling must work: %v", err)
+	}
+	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: lost.RefreshToken}); err != nil {
+		t.Fatalf("original successor must still work: %v", err)
+	}
+	// fora da janela o token antigo continua sendo reuso: revoga a família (cobre também os irmãos)
+	advance(refreshReuseGrace + time.Second)
 	_, err = s.Refresh(context.Background(), RefreshRequest{RefreshToken: first.RefreshToken})
 	wantCode(t, err, 401, "unauthorized")
-	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: second.RefreshToken}); err != nil {
-		t.Fatalf("sibling token must survive a reuse inside the grace window: %v", err)
-	}
 }
 
 func TestRefreshReuseOfExpiredTokenRevokesTheFamily(t *testing.T) {
@@ -200,22 +213,21 @@ func TestConcurrentRefreshDoesNotLogOut(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	var winner *Session
+	// todos ganham um token (o primeiro rotaciona, os demais caem na janela de graça e recebem um irmão), todos distintos
+	seen := map[string]bool{}
 	for i, err := range errs {
-		if err == nil {
-			if winner != nil {
-				t.Fatal("more than one concurrent refresh succeeded")
-			}
-			winner = &sesss[i]
-			continue
+		if err != nil {
+			t.Fatalf("concurrent refresh %d failed: %v", i, err)
 		}
-		wantCode(t, err, 401, "unauthorized")
+		if seen[sesss[i].RefreshToken] {
+			t.Fatal("two concurrent refreshes got the same refresh token")
+		}
+		seen[sesss[i].RefreshToken] = true
 	}
-	if winner == nil {
-		t.Fatal("no concurrent refresh succeeded")
-	}
-	if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: winner.RefreshToken}); err != nil {
-		t.Fatalf("winner's refresh token must still work (family revoked?): %v", err)
+	for _, sess := range sesss {
+		if _, err := s.Refresh(context.Background(), RefreshRequest{RefreshToken: sess.RefreshToken}); err != nil {
+			t.Fatalf("every concurrent successor must work (family revoked?): %v", err)
+		}
 	}
 }
 
