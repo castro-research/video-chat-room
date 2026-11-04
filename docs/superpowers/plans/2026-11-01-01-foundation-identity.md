@@ -6,7 +6,7 @@
 
 **Architecture:** Monólito modular (spec `docs/superpowers/specs/2026-11-01-kurz-server-design.md`). Pacotes `internal/platform/*` (ids, config, db, httpx) sem regra de negócio; `internal/identity` com senha, tokens, store e service; `internal/server` monta o `http.Handler`. Testes de integração usam Postgres real, um banco novo por teste.
 
-**Tech Stack:** Go 1.24, `net/http` (ServeMux com métodos), `pgx/v5`, `goose/v3` (migrações embutidas), `golang-jwt/v5`, `x/crypto/argon2`, Postgres 17 via Docker Compose.
+**Tech Stack:** Go 1.24, `net/http` (ServeMux com métodos), `pgx/v5`, `goose/v3` (migrações embutidas), `golang-jwt/v5`, `x/crypto/argon2`, Postgres 18 via Docker Compose.
 
 ---
 
@@ -64,7 +64,7 @@ Expected: `go.mod` criado com os quatro módulos em `require`.
 ```yaml
 services:
   db:
-    image: postgres:17
+    image: postgres:18
     environment:
       POSTGRES_USER: kurz
       POSTGRES_PASSWORD: kurz
@@ -77,7 +77,7 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - kurzdb:/var/lib/postgresql/data
+      - kurzdb:/var/lib/postgresql
 volumes:
   kurzdb:
 ```

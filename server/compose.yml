@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:17
+    image: postgres:18
     environment:
       POSTGRES_USER: kurz
       POSTGRES_PASSWORD: kurz
@@ -13,20 +13,19 @@ services:
       timeout: 3s
       retries: 20
     volumes:
-      - kurzdb:/var/lib/postgresql/data
-  # S3 local para os anexos. A imagem oficial minio/minio saiu do Docker Hub; usamos a do Chainguard (distroless,
-  # sem shell: por isso não há healthcheck aqui, `make s3-up` espera pelo endpoint de saúde).
-  minio:
-    image: cgr.dev/chainguard/minio:latest
-    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: kurzdev
-      MINIO_ROOT_PASSWORD: kurzdev-secret
+      - kurzdb:/var/lib/postgresql  # PG18+: PGDATA em /var/lib/postgresql/18/docker
+  # S3 local para os anexos: SeaweedFS (master + volume + filer + gateway S3 num processo só), tag pinada.
+  # Credenciais de DEV vêm de deploy/seaweedfs/s3.json (identity kurzdev com Admin: o servidor cria o bucket na subida).
+  # S3 do container na 8333, publicada no host em 8333; o endpoint público das URLs pré-assinadas tem que ser o host
+  # que o cliente alcança (a assinatura SigV4 cobre o Host).
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json", "-volume.max=50", "-master.volumeSizeLimitMB=128"]
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "8333:8333"
     volumes:
       - kurzs3:/data
+      - ./deploy/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
 volumes:
   kurzdb:
   kurzs3:
