@@ -1,22 +1,26 @@
 import Foundation
+import KurzKit
 
-/// Servidores (managers): o de fábrica primeiro, os adicionados guardados entre arranques, e o ligado. A saúde de cada um
-/// vem do /healthz: o ligado sempre, os outros só enquanto a lista está aberta.
+/// Servidores Kurz: o de fábrica primeiro, os adicionados guardados entre arranques, e o ligado. A saúde de cada um vem do
+/// `/.well-known/kurz`: o ligado sempre, os outros só enquanto a lista está aberta.
 @MainActor
 final class ServerList: ObservableObject {
-    static let factory = "https://cord.kurz.fyi"
+    /// Servidor local de desenvolvimento (`make db-up` + `go run ./cmd/kurz` em server/). O cord.kurz.fyi fala o contrato antigo.
+    static let factory = "http://localhost:8080"
+    private static let legacy = "https://cord.kurz.fyi"
 
     @Published private(set) var servers: [String]
     @Published private(set) var selected: String
-    /// servidor -> responde ao /healthz; sem entrada = ainda por saber
+    /// servidor -> responde ao well-known; sem entrada = ainda por saber
     @Published private(set) var health: [String: Bool] = [:]
+    @Published private(set) var info: [String: ServerInfo] = [:]
 
     private let defaults = UserDefaults.standard
     private var listOpen = false
     private var checks: Task<Void, Never>?
 
     init() {
-        let added = (defaults.stringArray(forKey: "servers") ?? []).filter { $0 != Self.factory }
+        let added = (defaults.stringArray(forKey: "servers") ?? []).filter { $0 != Self.factory && $0 != Self.legacy }
         let all = [Self.factory] + added
         servers = all
         selected = defaults.string(forKey: "server").flatMap { all.contains($0) ? $0 : nil } ?? Self.factory
@@ -24,7 +28,7 @@ final class ServerList: ObservableObject {
 
     var label: String { serverLabel(selected) }
     /// Matiz do avatar do servidor; estável entre arranques (o hashValue do Swift não é).
-    var hue: Double { Double(selected.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fffffff } % 360) }
+    var hue: Double { stableHue(selected) }
 
     func setListOpen(_ open: Bool) {
         listOpen = open
@@ -54,16 +58,18 @@ final class ServerList: ObservableObject {
         if selected == url { select(Self.factory) }
     }
 
-    /// Sonda o /healthz a cada 5 s. Idempotente: reinicia o ciclo (mudou o servidor ou abriu a lista).
+    /// Sonda o well-known a cada 5 s. Idempotente: reinicia o ciclo (mudou o servidor ou abriu a lista).
     func startChecks() {
         checks?.cancel()
         checks = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 let urls = self.listOpen ? self.servers : [self.selected]
-                await withTaskGroup(of: (String, Bool).self) { group in
-                    for u in urls { group.addTask { (u, await Manager(u).healthy()) } }
-                    for await (u, ok) in group { self.health[u] = ok }
+                await withTaskGroup(of: (String, ServerInfo?).self) { group in
+                    for u in urls {
+                        group.addTask { (u, try? await KurzAPI(baseURL: u, store: InMemoryTokenStore()).wellKnown()) }
+                    }
+                    for await (u, i) in group { self.health[u] = i != nil; self.info[u] = i }
                 }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }

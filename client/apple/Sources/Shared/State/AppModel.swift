@@ -1,18 +1,22 @@
 import Combine
 import Foundation
+import KurzKit
 
-/// O estado da app: junta servidores, salas, a sala ligada e a captura local, e guarda o estado dos botões (mudo, câmara,
-/// partilha). Cada peça vive no seu módulo; aqui só se ligam entre si. As mudanças das peças propagam-se para a UI.
+/// O estado da app: junta servidores, sessão, dados do servidor (guilds/canais/mensagens), a sala de voz ligada e a captura local,
+/// e guarda o estado dos botões (mudo, câmara, partilha). Cada peça vive no seu módulo; aqui só se ligam entre si.
 @MainActor
 final class AppModel: ObservableObject {
-    let guest = Guest()
     let servers = ServerList()
-    let rooms = RoomList()
+    let auth: AuthModel
     let local = LocalMedia()
     let session: RoomSession
 
-    /// A sala real ligada (ou a ligar).
-    @Published private(set) var roomId: String?
+    /// Os dados do servidor ligado; só existe com a sessão iniciada.
+    @Published private(set) var workspace: WorkspaceModel?
+    /// O canal de voz ligado (ou a ligar).
+    @Published private(set) var voiceChannel: Channel?
+    /// A vista principal mostra a sala de voz (senão, o canal de texto).
+    @Published var showingVoice = false
     @Published private(set) var muted = false
     @Published private(set) var camOn = false
     @Published private(set) var sharing = false
@@ -33,16 +37,17 @@ final class AppModel: ObservableObject {
     private var bag = Set<AnyCancellable>()
 
     init() {
-        session = RoomSession(userId: guest.userId, local: local)
-        // a UI observa só o AppModel: as mudanças das peças passam por aqui
-        for child in [servers.objectWillChange, rooms.objectWillChange, session.objectWillChange] {
+        auth = AuthModel(baseURL: servers.selected)
+        session = RoomSession(local: local)
+        // a UI observa o AppModel para o essencial: as mudanças das peças passam por aqui (os dados pesados vão por EnvironmentObject)
+        for child in [servers.objectWillChange, auth.objectWillChange, session.objectWillChange] {
             child.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &bag)
         }
-        servers.$selected.dropFirst().sink { [weak self] url in
-            guard let self else { return }
-            if self.inVoice { self.leaveVoice() }  // as salas são de cada servidor
-            self.rooms.follow(url)
-        }.store(in: &bag)
+        servers.$selected.dropFirst().sink { [weak self] url in self?.auth.use(url) }.store(in: &bag)
+        auth.$phase.removeDuplicates().sink { [weak self] phase in self?.phaseChanged(phase) }.store(in: &bag)
+        // mudo/câmara/partilha refletem-se no gateway enquanto se está numa sala
+        Publishers.CombineLatest3($muted, $camOn, $sharing).dropFirst().sink { [weak self] _ in self?.pushVoiceState() }.store(in: &bag)
+        session.onJoined = { [weak self] in self?.pushVoiceState() }
 #if os(macOS)
         local.screenSources.onChange = { [weak self] list, thumbs in self?.screenList = list; self?.screenThumbs = thumbs }
         local.screen.onStopped = { [weak self] in self?.stopSharing() }
@@ -50,63 +55,68 @@ final class AppModel: ObservableObject {
         micId = local.devices.inputId
         cameraId = local.camera.rememberedId
         servers.startChecks()
-        rooms.follow(servers.selected)
+        Task { await auth.restore() }
     }
 
-    var inVoice: Bool { roomId != nil }
+    var inVoice: Bool { voiceChannel != nil }
+    var meId: String { auth.user?.id ?? "" }
+    var meName: String { auth.user?.name ?? "" }
 
-    /// Matiz do avatar de [userId]; o próprio usa o seu.
-    func hue(of userId: String) -> Double {
-        userId == guest.userId ? guest.hue : Double(userId.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fffffff } % 360)
+    /// A sessão começou, acabou ou mudou de servidor: os dados e a voz são sempre da sessão atual.
+    private func phaseChanged(_ phase: AuthModel.Phase) {
+        if inVoice { leaveVoice() }
+        workspace?.stop()
+        workspace = nil
+        showingVoice = false
+        if phase == .signedIn, let me = auth.user {
+            let w = WorkspaceModel(api: auth.api, me: me, info: auth.info)
+            workspace = w
+            w.start()
+        }
     }
 
-    // --- salas (UI otimista: a UI mostra a sala clicada já, com o que se sabe, e o próprio lá dentro) ---
+    // --- voz ---
 
-    /// A sala ligada como a UI a mostra: a do SFU se já respondeu, senão a da listagem; nil se o código nem está listado.
-    var shownRoom: Room? {
-        guard let id = roomId else { return nil }
-        return session.room.flatMap { $0.id == id ? $0 : nil } ?? rooms.rooms.first { $0.id == id }
+    /// Quem a UI mostra no canal de voz [channelId]: o roster do gateway; no canal ligado o próprio entra já, com o estado dos botões.
+    func people(in channelId: String) -> [VoiceParticipant] {
+        let roster = workspace?.ws.voice.participants(in: channelId) ?? []
+        let others = roster.filter { $0.id != meId }
+        guard voiceChannel?.id == channelId, let me = auth.user else { return others }
+        return [VoiceParticipant(user: me, muted: muted, camOn: camOn, sharing: sharing)] + others
     }
 
-    /// Quem a UI mostra em [room]: na sala ligada o próprio entra já (com o estado dos botões), nas outras sai já.
-    func people(in room: Room) -> [Participant] {
-        let known = roomId == room.id ? shownRoom ?? room : room
-        let others = known.participants.filter { $0.userId != guest.userId }
-        guard roomId == room.id else { return others }
-        return [Participant(userId: guest.userId, name: guest.name, mic: !muted, camera: camOn, screen: sharing)] + others
-    }
-
-    func joinRoom(_ id: String) {
-        guard roomId != id else { return }
-        roomId = id
+    /// Entra na sala de voz (move-se se estava noutra) e mostra-a. Com a capability `voice` em falta, avisa e não faz nada.
+    func joinVoice(_ channel: Channel) {
+        guard channel.kind == .voice else { return }
+        guard workspace?.supportsVoice == true else { notice = Msg.noVoice; return }
+        showingVoice = true
+        guard voiceChannel?.id != channel.id, let api = workspace?.api else { return }
+        voiceChannel = channel
+        let id = channel.id, uid = meId
         // cada sala espera que a anterior acabe de sair (senão a saída da velha apanhava a sessão da nova)
         let previous = roomTask
         previous?.cancel()
         roomTask = Task { [weak self] in
             await previous?.value
-            guard let self, self.roomId == id else { return }
-            await self.session.run(base: self.servers.selected, roomId: id, name: self.guest.name)
-            if self.roomId == id { self.leaveVoice() }  // falhou a entrada ou perdeu-se a ligação de vez
+            guard let self, self.voiceChannel?.id == id else { return }
+            await self.session.run(api: api, channelId: id, userId: uid)
+            if self.voiceChannel?.id == id { self.leaveVoice() }  // falhou a entrada ou perdeu-se a ligação de vez
         }
         syncCapture()
     }
 
     func leaveVoice() {
-        roomId = nil; muted = false; camOn = false; sharing = false
+        let left = voiceChannel
+        voiceChannel = nil; muted = false; camOn = false; sharing = false; showingVoice = false
         roomTask?.cancel(); roomTask = nil
         syncCapture()
+        // o servidor tira-nos do estado de voz (idempotente); sem isto só o timeout de 3 min o faria
+        if let left, let api = workspace?.api { Task { try? await api.leaveVoice(channelId: left.id) } }
     }
 
-    /// Cria o canal e entra nele; nil (com aviso) se falhou.
-    func createRoom(_ name: String) async -> Bool {
-        do {
-            let room = try await rooms.create(name)
-            joinRoom(room.id)
-            return true
-        } catch {
-            notice = error.localizedDescription
-            return false
-        }
+    private func pushVoiceState() {
+        guard inVoice else { return }
+        workspace?.setVoiceState(muted: muted, camOn: camOn, sharing: sharing)
     }
 
     // --- botões: cada um liga/desliga a captura respectiva; um pedido recusado repõe o botão ---

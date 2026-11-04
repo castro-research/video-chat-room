@@ -1,4 +1,5 @@
 import Foundation
+import KurzKit
 import WebRTC
 
 /// Resolve uma vez, com sucesso ou erro, e quem espera é acordado; sem timeout próprio (ver MediaSession.connect).
