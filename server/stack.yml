@@ -1,0 +1,65 @@
+# Stack Docker Swarm (nó único) do monólito Kurz: kurz + Postgres 18 + SeaweedFS (S3 dos anexos).
+# Sobe com ./deploy.sh, que gera os segredos em .env (uma vez), builda a imagem e define as variáveis abaixo.
+# Portas publicadas: 30082 (API + WebSocket) e 30083 (S3, que o CLIENTE acessa direto nas URLs pré-assinadas).
+services:
+  kurz:
+    image: ${KURZ_IMAGE:-kurz/server:latest}
+    environment:
+      KURZ_DATABASE_URL: postgres://kurz:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}@db:5432/kurz?sslmode=disable
+      KURZ_JWT_SECRET: ${KURZ_JWT_SECRET:?defina KURZ_JWT_SECRET}
+      # ponytail: 1 réplica, id fixo. KURZ_NODE_ID_FROM_HOSTNAME não serve no Swarm (hostname é um hash); para escalar, `hostname: kurz-{{.Task.Slot}}`.
+      KURZ_NODE_ID: "0"
+      KURZ_S3_ENDPOINT: seaweedfs:8333
+      KURZ_S3_PUBLIC_ENDPOINT: ${KURZ_S3_PUBLIC_ENDPOINT:?defina KURZ_S3_PUBLIC_ENDPOINT}
+      KURZ_S3_ACCESS_KEY: ${S3_ACCESS_KEY:?defina S3_ACCESS_KEY}
+      KURZ_S3_SECRET_KEY: ${S3_SECRET_KEY:?defina S3_SECRET_KEY}
+      # Voz: o mesmo segredo do SFU (experimentos/.env) e o ws(s):// do /v1/media como o CLIENTE alcança.
+      KURZ_SECRET: ${KURZ_SECRET:?defina KURZ_SECRET}
+      KURZ_SFU_URL: ${KURZ_SFU_URL:?defina KURZ_SFU_URL}
+      # Atrás do túnel o IP do cliente vem no X-Forwarded-For (entrada mais à direita). Só ligue se TODO acesso passar pelo proxy.
+      KURZ_TRUSTED_PROXY: ${KURZ_TRUSTED_PROXY:-false}
+      # /metrics sem auth num listener próprio, sem porta publicada: só a rede da stack alcança.
+      KURZ_METRICS_ADDR: ":9090"
+    ports:
+      - "30082:8080"
+    deploy:
+      replicas: 1
+      # o Postgres pode demorar a aceitar conexões na primeira subida; o servidor sai e o Swarm tenta de novo
+      restart_policy: { condition: any, delay: 3s }
+    # sem healthcheck: a imagem é distroless (sem shell nem curl); /healthz fica para sondas externas
+
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: kurz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD}
+      POSTGRES_DB: kurz
+    volumes:
+      - kurzdb:/var/lib/postgresql # PG18+: PGDATA em /var/lib/postgresql/18/docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kurz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Mesma imagem e flags do compose.yml (testados lá); as credenciais vêm de um config do Swarm gerado pelo deploy.sh.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json", "-volume.max=50", "-master.volumeSizeLimitMB=128"]
+    ports:
+      - "30083:8333"
+    volumes:
+      - kurzs3:/data
+    configs:
+      - source: s3json
+        target: /etc/seaweedfs/s3.json
+
+configs:
+  s3json:
+    # config do Swarm é imutável: o nome leva o checksum do arquivo, então trocar as credenciais cria outro config.
+    name: ${S3_CONFIG_NAME:?defina S3_CONFIG_NAME}
+    file: ./.s3.json
+
+volumes:
+  kurzdb:
+  kurzs3:

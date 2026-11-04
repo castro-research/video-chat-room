@@ -12,6 +12,7 @@ client/apple/*.xcworkspace/
 client/apple/*.xcodeproj/
 client/apple/Sources/*/Info.plist
 **/.env
+server/.s3.json
 /experimentos/manager/manager
 /experimentos/sfu/sfu
 **/distclient/apple/build/
