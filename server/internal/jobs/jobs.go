@@ -50,6 +50,9 @@ type Options struct {
 	MaxAttempts int                             // depois disso o job vira failed (padrão 8)
 	Backoff     func(attempt int) time.Duration // espera antes da tentativa seguinte (padrão exponencial, 1s a 10min)
 	Concurrency int                             // goroutines pegando jobs (padrão 2)
+	// FailedRetention: quanto tempo um job que esgotou as tentativas fica na tabela (padrão 7 dias) antes da limpeza
+	// horária apagá-lo. kurz_jobs_failed conta os que ainda estão lá, então alerte antes disso.
+	FailedRetention time.Duration
 }
 
 func (o Options) withDefaults() Options {
@@ -67,6 +70,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Concurrency <= 0 {
 		o.Concurrency = 2
+	}
+	if o.FailedRetention <= 0 {
+		o.FailedRetention = 7 * 24 * time.Hour
 	}
 	return o
 }
@@ -255,6 +261,9 @@ func (w *Worker) Run(ctx context.Context) {
 				if _, err := w.Purge(ctx, 24*time.Hour); err != nil && ctx.Err() == nil {
 					slog.Error("jobs purge", "err", err)
 				}
+				if _, err := w.PurgeFailed(ctx, w.opt.FailedRetention); err != nil && ctx.Err() == nil {
+					slog.Error("jobs purge failed", "err", err)
+				}
 			}
 		}
 	}()
@@ -274,5 +283,11 @@ func (w *Worker) enqueueOnce(ctx context.Context, kind string) error {
 // Purge apaga jobs concluídos há mais de olderThan. O Run chama de hora em hora com 24h.
 func (w *Worker) Purge(ctx context.Context, olderThan time.Duration) (int64, error) {
 	tag, err := w.pool.Exec(ctx, `DELETE FROM jobs WHERE done_at < now() - make_interval(secs => $1)`, olderThan.Seconds())
+	return tag.RowsAffected(), err
+}
+
+// PurgeFailed apaga jobs que esgotaram as tentativas há mais de olderThan.
+func (w *Worker) PurgeFailed(ctx context.Context, olderThan time.Duration) (int64, error) {
+	tag, err := w.pool.Exec(ctx, `DELETE FROM jobs WHERE failed_at < now() - make_interval(secs => $1)`, olderThan.Seconds())
 	return tag.RowsAffected(), err
 }

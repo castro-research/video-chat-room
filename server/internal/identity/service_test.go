@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"kurz/server/internal/jobs"
 	"kurz/server/internal/platform/dbtest"
 	"kurz/server/internal/platform/httpx"
 	"kurz/server/internal/platform/ids"
@@ -313,5 +314,84 @@ func TestCreateUserOnlyMapsUsernameConflictToTaken(t *testing.T) {
 	_, err := s.store.createUser(ctx, 42, "outro", "Outro", "hash")
 	if err == nil || errors.Is(err, errUsernameTaken) {
 		t.Fatalf("same id, different username: err = %v, want a non-username_taken error", err)
+	}
+}
+
+func countRefresh(t *testing.T, s *Service) (n int) {
+	t.Helper()
+	if err := s.store.db.QueryRow(context.Background(), `SELECT count(*) FROM refresh_tokens`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// A limpeza periódica apaga expirados/usados/revogados só depois da retenção, e preserva os tokens vivos.
+func TestCleanupRefreshAppliesRetention(t *testing.T) {
+	s := newTestService(t, "open")
+	s.cfg.RefreshRetention = 7 * 24 * time.Hour
+	advance := fixedClock(s)
+	ctx := context.Background()
+
+	old := register(t, s, "yuri")                                                  // t0: expira em t0+1h
+	rotated, err := s.Refresh(ctx, RefreshRequest{RefreshToken: old.RefreshToken}) // usa o primeiro, cria o segundo
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRefresh(t, s); n != 2 {
+		t.Fatalf("rows = %d", n)
+	}
+	// logo depois: nada passou da retenção
+	if n, err := s.CleanupRefresh(ctx); err != nil || n != 0 {
+		t.Fatalf("cleanup = %d, %v", n, err)
+	}
+
+	// 3 dias depois: o usuário abre outra sessão e a revoga (logout); ainda dentro da retenção
+	advance(3 * 24 * time.Hour)
+	other := register(t, s, "ana")
+	if err := s.Logout(ctx, RefreshRequest{RefreshToken: other.RefreshToken}); err != nil {
+		t.Fatal(err)
+	}
+	// 5 dias depois (t0+8d): os dois de yuri expiraram/foram usados há mais de 7 dias; o revogado (t0+3d) ainda não
+	advance(5 * 24 * time.Hour)
+	if n, err := s.CleanupRefresh(ctx); err != nil || n != 2 {
+		t.Fatalf("cleanup after retention = %d, %v (want the 2 rows of the first session)", n, err)
+	}
+	if n := countRefresh(t, s); n != 1 {
+		t.Fatalf("rows left = %d, want the revoked one", n)
+	}
+	_ = rotated
+	// mais 3 dias: o revogado também passa da retenção
+	advance(3 * 24 * time.Hour)
+	if n, err := s.CleanupRefresh(ctx); err != nil || n != 1 {
+		t.Fatalf("cleanup revoked = %d, %v", n, err)
+	}
+	if n := countRefresh(t, s); n != 0 {
+		t.Fatalf("rows left = %d", n)
+	}
+}
+
+// O job periódico está registrado e roda a limpeza pelo worker, apagando os velhos e preservando a sessão viva.
+func TestCleanupRefreshJobRunsThroughWorker(t *testing.T) {
+	s := newTestService(t, "open")
+	s.cfg.RefreshRetention = time.Hour
+	ctx := context.Background()
+	live := register(t, s, "yuri")
+	if _, err := s.store.db.Exec(ctx, `INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, used_at)
+		SELECT 900, user_id, 900, '\x01', now() - interval '3 hours', now() - interval '4 hours' FROM refresh_tokens LIMIT 1`); err != nil {
+		t.Fatal(err)
+	}
+	w := jobs.NewWorker(s.store.db, ids.NewGenerator(2), jobs.Options{})
+	s.RegisterJobs(w)
+	if err := jobs.Enqueue(ctx, s.store.db, 1, JobCleanupRefresh, struct{}{}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := w.RunOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("jobs run = %d, %v", n, err)
+	}
+	if n := countRefresh(t, s); n != 1 {
+		t.Fatalf("rows = %d, want only the live session", n)
+	}
+	if _, err := s.Refresh(ctx, RefreshRequest{RefreshToken: live.RefreshToken}); err != nil {
+		t.Fatalf("live session must survive the cleanup: %v", err)
 	}
 }

@@ -105,7 +105,7 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 	}
 	gen := ids.NewGenerator(cfg.NodeID)
 	tokens := identity.NewTokenIssuer(cfg.JWTSecret, accessTTL)
-	idSvc := identity.NewService(pool, gen, tokens, identity.Config{Registration: cfg.Registration, RefreshTTL: refreshTTL})
+	idSvc := identity.NewService(pool, gen, tokens, identity.Config{Registration: cfg.Registration, RefreshTTL: refreshTTL, RefreshRetention: time.Duration(cfg.RefreshRetentionDays) * 24 * time.Hour})
 
 	// guilds precisa de channels (canal padrão na criação) e channels precisa de guilds (permissões):
 	// o ciclo é fechado aqui por interfaces, sem import direto entre os pacotes.
@@ -118,7 +118,11 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 		msgSvc.WithStorage(o.store)
 	}
 	searchSvc := search.NewService(pool, channelPerms{chSvc})
+	if o.jobs.FailedRetention == 0 {
+		o.jobs.FailedRetention = time.Duration(cfg.JobsFailedRetentionDays) * 24 * time.Hour
+	}
 	worker := jobs.NewWorker(pool, gen, o.jobs)
+	idSvc.RegisterJobs(worker)
 	msgSvc.RegisterJobs(worker)
 
 	vcfg := voice.Config{Secret: cfg.Voice.Secret, SFUURL: cfg.Voice.SFUURL}

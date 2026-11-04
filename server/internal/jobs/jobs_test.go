@@ -196,3 +196,25 @@ func TestRunLoopStopsOnCancelAndPeriodicEnqueues(t *testing.T) {
 		t.Fatal("Run did not stop after cancel")
 	}
 }
+
+func TestPurgeFailedKeepsRecentOnes(t *testing.T) {
+	pool := dbtest.New(t)
+	ctx := context.Background()
+	w := NewWorker(pool, ids.NewGenerator(1), Options{})
+	for _, q := range []string{
+		`INSERT INTO jobs (id, kind, failed_at) VALUES (1, 'x', now() - interval '10 days')`,
+		`INSERT INTO jobs (id, kind, failed_at) VALUES (2, 'x', now() - interval '1 day')`,
+		`INSERT INTO jobs (id, kind) VALUES (3, 'x')`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := w.PurgeFailed(ctx, 7*24*time.Hour); err != nil || n != 1 {
+		t.Fatalf("purged = %d, %v", n, err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs`).Scan(&left); err != nil || left != 2 {
+		t.Fatalf("left = %d, %v", left, err)
+	}
+}

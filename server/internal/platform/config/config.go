@@ -22,9 +22,12 @@ type Config struct {
 	Voice        Voice
 	RateLimit    RateLimit
 	WS           WebSocket
-	MetricsAddr  string // KURZ_METRICS_ADDR: listener próprio do /metrics (ex.: :9090). Vazio = /metrics no listener da API (só dev)
-	TrustedProxy bool   // KURZ_TRUSTED_PROXY: confia no X-Forwarded-For (só atrás de um proxy que o sobrescreve)
-	OtelEndpoint string // KURZ_OTEL_ENDPOINT: URL OTLP/HTTP do coletor (ex.: http://otel:4318); vazio desliga os traces
+	// Retenção da limpeza periódica (dias). Zero = padrão (7).
+	RefreshRetentionDays    int    // KURZ_REFRESH_RETENTION_DAYS: refresh tokens expirados/usados/revogados são apagados depois disso
+	JobsFailedRetentionDays int    // KURZ_JOBS_FAILED_RETENTION_DAYS: jobs que esgotaram as tentativas são apagados depois disso
+	MetricsAddr             string // KURZ_METRICS_ADDR: listener próprio do /metrics (ex.: :9090). Vazio = /metrics no listener da API (só dev)
+	TrustedProxy            bool   // KURZ_TRUSTED_PROXY: confia no X-Forwarded-For (só atrás de um proxy que o sobrescreve)
+	OtelEndpoint            string // KURZ_OTEL_ENDPOINT: URL OTLP/HTTP do coletor (ex.: http://otel:4318); vazio desliga os traces
 }
 
 // RateLimit configura os token buckets (RNF10). O valor zero é "desligado"; Load liga com os padrões.
@@ -121,6 +124,18 @@ func Load(getenv func(string) string) (Config, error) {
 	c.MetricsAddr = getenv("KURZ_METRICS_ADDR")
 	if err := loadRateLimit(&c, getenv); err != nil {
 		return Config{}, err
+	}
+	for _, f := range []struct {
+		env string
+		dst *int
+	}{{"KURZ_REFRESH_RETENTION_DAYS", &c.RefreshRetentionDays}, {"KURZ_JOBS_FAILED_RETENTION_DAYS", &c.JobsFailedRetentionDays}} {
+		if v := getenv(f.env); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				return Config{}, fmt.Errorf("%s must be a positive integer", f.env)
+			}
+			*f.dst = n
+		}
 	}
 	if err := loadWS(&c, getenv); err != nil {
 		return Config{}, err

@@ -14,11 +14,18 @@ import (
 	"kurz/server/internal/platform/ids"
 )
 
+// DefaultRefreshRetention é o padrão de Config.RefreshRetention.
+const DefaultRefreshRetention = 7 * 24 * time.Hour
+
 var usernameRe = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 
 type Config struct {
 	Registration string // "open" ou "closed"
 	RefreshTTL   time.Duration
+	// RefreshRetention: quanto tempo um refresh token expirado, usado ou revogado fica na tabela antes da limpeza
+	// periódica apagá-lo (padrão 7 dias). Depois disso, reapresentar um token usado dá 401 sem revogar a família
+	// (a detecção de reuso vale pela janela de retenção).
+	RefreshRetention time.Duration
 }
 
 type Service struct {
@@ -34,6 +41,9 @@ func NewService(db *pgxpool.Pool, gen *ids.Generator, tokens *TokenIssuer, cfg C
 	dummy, err := HashPassword("kurz-dummy-password")
 	if err != nil {
 		panic(err)
+	}
+	if cfg.RefreshRetention <= 0 {
+		cfg.RefreshRetention = DefaultRefreshRetention
 	}
 	return &Service{store: &store{db: db}, ids: gen, tokens: tokens, cfg: cfg, now: time.Now, dummyHash: dummy}
 }

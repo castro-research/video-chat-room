@@ -41,6 +41,8 @@ make kind-up        # cluster kind local com Postgres, SeaweedFS e 2 réplicas (
 | `KURZ_WS_FRAME_RATE` / `KURZ_WS_FRAME_BURST` | `10` / `20` | token bucket **por conexão WebSocket** para frames do cliente (heartbeat custa 1, `voice.state.set` custa 4). Estourou: fecha com `4011` |
 | `KURZ_WS_MAX_SESSIONS_PER_USER` | `20` | teto de sessões do gateway por usuário e réplica (ao vivo ou esperando resume; as abandonadas são recolhidas antes de recusar). Acima: `4012` |
 | `KURZ_METRICS_ADDR` | vazio | listener próprio do `/metrics` (ex.: `:9090`), **sem auth** e fora do rate limit; nesse caso o `/metrics` é **removido** do listener da API (404). **Vazio = `/metrics` no listener principal, só para dev** (o servidor avisa no log). No k8s a porta é `9090`, só no pod (sem Service/NodePort) |
+| `KURZ_REFRESH_RETENTION_DAYS` | `7` | job horário apaga refresh tokens expirados, usados ou revogados há mais que isso (a tabela crescia a cada login e refresh). Passado o prazo, reapresentar um token usado dá 401 sem revogar a família |
+| `KURZ_JOBS_FAILED_RETENTION_DAYS` | `7` | jobs que esgotaram as tentativas são apagados depois disso (`kurz_jobs_failed` conta os que ainda estão lá: alerte antes). Os concluídos saem em 24 h |
 | `KURZ_TRUSTED_PROXY` | `false` | `true` confia no `X-Forwarded-For` (usa a entrada mais à direita, a do nosso proxy). Só ligue atrás de um proxy que sobrescreve o header |
 | `KURZ_OTEL_ENDPOINT` | vazio | URL OTLP/HTTP do coletor (`http://otel:4318`; sem caminho usa `/v1/traces`). **Vazio desliga os traces** |
 

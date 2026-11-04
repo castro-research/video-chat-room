@@ -164,3 +164,13 @@ func (s *store) revokeFamily(ctx context.Context, hash []byte, now time.Time) er
 		hash, now)
 	return err
 }
+
+// deleteStaleRefresh apaga até limit refresh tokens que expiraram, foram usados ou foram revogados antes de cutoff.
+func (s *store) deleteStaleRefresh(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM refresh_tokens WHERE id IN (
+			SELECT id FROM refresh_tokens
+			WHERE expires_at < $1 OR used_at < $1 OR revoked_at < $1
+			LIMIT $2)`, cutoff, limit)
+	return tag.RowsAffected(), err
+}

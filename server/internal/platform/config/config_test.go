@@ -185,3 +185,20 @@ func TestMetricsAddr(t *testing.T) {
 		t.Fatalf("%+v %v", c.MetricsAddr, err)
 	}
 }
+
+func TestRetentionConfig(t *testing.T) {
+	c, err := Load(env(valid()))
+	if err != nil || c.RefreshRetentionDays != 0 || c.JobsFailedRetentionDays != 0 {
+		t.Fatalf("defaults (zero = 7 days downstream): %+v %v", c, err)
+	}
+	m := valid()
+	m["KURZ_REFRESH_RETENTION_DAYS"], m["KURZ_JOBS_FAILED_RETENTION_DAYS"] = "14", "3"
+	c, err = Load(env(m))
+	if err != nil || c.RefreshRetentionDays != 14 || c.JobsFailedRetentionDays != 3 {
+		t.Fatalf("%+v %v", c, err)
+	}
+	m["KURZ_REFRESH_RETENTION_DAYS"] = "0"
+	if _, err := Load(env(m)); err == nil {
+		t.Fatal("0 days must fail")
+	}
+}
