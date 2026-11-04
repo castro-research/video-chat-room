@@ -1396,7 +1396,7 @@ components:
         id: { type: string, description: Goes in `SendMessageRequest.attachmentIds`. }
         uploadUrl: { type: string, format: uri, description: Pre-signed URL; send the file bytes to it. }
         method: { type: string, enum: [PUT] }
-        expiresAt: { type: string, format: date-time, description: 'About 15 minutes ahead. After that, request a new upload.' }
+        expiresAt: { type: string, format: date-time, description: 'About 5 minutes ahead. After that, request a new upload.' }
         name: { type: string }
         contentType: { type: string, description: The normalized type. }
         size: { type: integer }

@@ -275,6 +275,37 @@ func TestAttachmentValidationAndPermissions(t *testing.T) {
 	})
 }
 
+// A URL PUT continua válida por alguns minutos depois do bind: sobrescrever o objeto original não pode alterar o
+// anexo servido (que vem de uma cópia final), nem fazer o upload "trocado" passar da validação.
+func TestAttachmentOverwriteAfterBindDoesNotChangeServedBytes(t *testing.T) {
+	storageBackends(t, func(t *testing.T, e storageEnv) {
+		alice := newUser(t, e.url, "alice")
+		ch := channelNamed(alice, createGuild(alice, "Casa"), "geral")["id"].(string)
+		good := []byte("conteudo validado")
+		up := requestUpload(alice, ch, "a.png", "image/png", len(good))
+		putObject(t, up["uploadUrl"].(string), good, 200)
+		m := alice.do("POST", "/v1/channels/"+ch+"/messages", 201, map[string]any{"attachmentIds": []string{up["id"].(string)}})
+		url := m["attachments"].([]any)[0].(map[string]any)["url"].(string)
+
+		// o atacante ainda tem a URL PUT: sobrescreve com algo maior e diferente
+		putObject(t, up["uploadUrl"].(string), bytes.Repeat([]byte("X"), 4096), 200)
+
+		if code, body, _ := getObject(t, url); code != 200 || !bytes.Equal(body, good) {
+			t.Fatalf("served bytes changed after overwrite: %d %q", code, body)
+		}
+		list := items(alice.do("GET", "/v1/channels/"+ch+"/messages", 200, nil))
+		u2 := list[0]["attachments"].([]any)[0].(map[string]any)["url"].(string)
+		if code, body, _ := getObject(t, u2); code != 200 || !bytes.Equal(body, good) {
+			t.Fatalf("listed bytes changed after overwrite: %d %q", code, body)
+		}
+
+		// sobrescrever ANTES do bind com tamanho diferente continua sendo recusado
+		up2 := requestUpload(alice, ch, "b.png", "image/png", 3)
+		putObject(t, up2["uploadUrl"].(string), []byte("abcdef"), 200)
+		alice.fail("POST", "/v1/channels/"+ch+"/messages", 422, "validation", map[string]any{"attachmentIds": []string{up2["id"].(string)}})
+	})
+}
+
 func TestAttachmentURLsExpire(t *testing.T) {
 	f := objstore.NewFake()
 	fs := httptest.NewServer(f)
@@ -294,7 +325,7 @@ func TestAttachmentURLsExpire(t *testing.T) {
 	if code, _, _ := getObject(t, url); code != 403 {
 		t.Fatalf("expired url = %d", code)
 	}
-	putObject(t, up["uploadUrl"].(string), []byte("x"), 403) // a de upload (15 min) também
+	putObject(t, up["uploadUrl"].(string), []byte("x"), 403) // a de upload (5 min) também
 }
 
 func TestOrphanCleanupJob(t *testing.T) {
@@ -319,8 +350,8 @@ func TestOrphanCleanupJob(t *testing.T) {
 		if _, err := e.pool.Exec(ctx, `INSERT INTO jobs (id, kind) VALUES (1, 'attachments.cleanup')`); err != nil {
 			t.Fatal(err)
 		}
-		// roda: a limpeza (1) + a remoção do objeto que ela enfileirou (1)
-		if n, err := e.app.RunJobsOnce(ctx); err != nil || n != 2 {
+		// roda: a limpeza (1) + a remoção do objeto e da cópia final que ela enfileirou (2)
+		if n, err := e.app.RunJobsOnce(ctx); err != nil || n != 3 {
 			t.Fatalf("jobs run = %d, %v", n, err)
 		}
 		if _, err := e.store.Stat(ctx, oldKey); !errors.Is(err, objstore.ErrNotFound) {

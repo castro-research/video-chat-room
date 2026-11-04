@@ -29,13 +29,17 @@ const (
 	MaxAttachmentSize        = 25 << 20
 	MaxAttachmentsPerMessage = 10
 	MaxFilenameRunes         = 255
-	UploadURLTTL             = 15 * time.Minute
+	UploadURLTTL             = 5 * time.Minute // curto: depois do bind a URL PUT ainda vale até aqui (ver finalSuffix)
 	DownloadURLTTL           = time.Hour
 	PendingTTL               = time.Hour // quanto um upload pedido e nunca ligado a mensagem sobrevive
 	JobCleanupPending        = "attachments.cleanup"
 	JobDeleteObject          = "attachments.delete_object"
-	cleanupBatch             = 200
-	cleanupEvery             = 10 * time.Minute
+	// finalSuffix: ao ligar o anexo à mensagem o objeto é copiado (server-side) para object_key+finalSuffix, uma chave que
+	// nenhuma URL PUT assinada cobre. O que o cliente subiu (chave original) é descartado depois que a URL PUT expira;
+	// sobrescrevê-lo depois do bind não altera o anexo servido, que sempre vem da cópia.
+	finalSuffix  = ".v"
+	cleanupBatch = 200
+	cleanupEvery = 10 * time.Minute
 )
 
 // ErrNoStorage: o servidor roda sem S3 configurado. Vira 501 not_supported (capability `attachments` ausente).
@@ -142,7 +146,9 @@ func (s *Service) RequestUpload(ctx context.Context, user, channel int64, in Upl
 }
 
 // checkAttachments confere, ANTES da transação da mensagem (Stat é rede), que os anexos são pendentes, do mesmo canal
-// e do mesmo usuário e que o objeto existe com o tamanho declarado.
+// e do mesmo usuário e que o objeto existe com o tamanho declarado, e copia cada objeto para a chave final imutável
+// (finalSuffix). O tamanho é conferido na CÓPIA, não só no original: quem sobrescrever o original entre o Stat e o Copy
+// é pego, e depois da cópia a URL PUT não alcança mais o que será servido.
 func (s *Service) checkAttachments(ctx context.Context, user, channel int64, attIDs []int64) error {
 	if len(attIDs) == 0 {
 		return nil
@@ -179,6 +185,20 @@ func (s *Service) checkAttachments(ctx context.Context, user, channel int64, att
 		if info.Size != a.Size {
 			return httpx.Validation("attachment " + ids.Format(a.ID) + " size differs from the declared one")
 		}
+		if err := s.objs.Copy(ctx, a.ObjectKey, a.ObjectKey+finalSuffix); err != nil {
+			if errors.Is(err, objstore.ErrNotFound) {
+				return httpx.Validation("attachment " + ids.Format(a.ID) + " was not uploaded")
+			}
+			return err
+		}
+		info, err = s.objs.Stat(ctx, a.ObjectKey+finalSuffix)
+		if err != nil {
+			return err
+		}
+		if info.Size != a.Size {
+			_ = s.objs.Delete(ctx, a.ObjectKey+finalSuffix)
+			return httpx.Validation("attachment " + ids.Format(a.ID) + " size differs from the declared one")
+		}
 	}
 	return nil
 }
@@ -189,12 +209,19 @@ func (s *Service) bindAttachments(ctx context.Context, tx pgx.Tx, user, channel,
 	if len(attIDs) == 0 {
 		return nil
 	}
-	n, err := s.store.bindAttachments(ctx, tx, user, channel, message, attIDs)
+	finals, err := s.store.bindAttachments(ctx, tx, user, channel, message, attIDs)
 	if err != nil {
 		return err
 	}
-	if n != int64(len(attIDs)) {
+	if len(finals) != len(attIDs) {
 		return httpx.Validation("attachmentIds must be your pending uploads in this channel")
+	}
+	// o original (que a URL PUT ainda pode sobrescrever) sai depois que ela expira
+	runAt := time.Now().Add(UploadURLTTL + time.Minute)
+	for _, k := range finals {
+		if err := jobs.Enqueue(ctx, tx, s.ids.Next(), JobDeleteObject, map[string]string{"key": strings.TrimSuffix(k, finalSuffix)}, runAt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -249,6 +276,10 @@ func (s *Service) CleanupPending(ctx context.Context) (int, error) {
 				return err
 			}
 			n = len(keys)
+			// a cópia final pode existir se um envio falhou depois de copiar
+			for _, k := range slices.Clone(keys) {
+				keys = append(keys, k+finalSuffix)
+			}
 			return s.enqueueObjectDeletes(ctx, tx, keys)
 		})
 		if err != nil {

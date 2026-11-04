@@ -72,6 +72,17 @@ func (f *Fake) Stat(_ context.Context, key string) (Info, error) {
 	return Info{Size: int64(len(o.data)), ContentType: o.contentType}, nil
 }
 
+func (f *Fake) Copy(_ context.Context, src, dst string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.objs[src]
+	if !ok {
+		return ErrNotFound
+	}
+	f.objs[dst] = fakeObj{data: append([]byte(nil), o.data...), contentType: o.contentType}
+	return nil
+}
+
 func (f *Fake) Delete(_ context.Context, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

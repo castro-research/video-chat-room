@@ -48,12 +48,26 @@ func (s *store) attachmentsOfMessages(ctx context.Context, q querier, messageIDs
 	return scanAttachments(rows)
 }
 
-// bindAttachments promove a 'ready' só o que ainda é pendente, do mesmo canal e do mesmo usuário.
-func (s *store) bindAttachments(ctx context.Context, q querier, user, channel, message int64, ids []int64) (int64, error) {
-	tag, err := q.Exec(ctx,
-		`UPDATE attachments SET status = 'ready', message_id = $1
-		 WHERE id = ANY($2) AND status = 'pending' AND channel_id = $3 AND uploader_id = $4`, message, ids, channel, user)
-	return tag.RowsAffected(), err
+// bindAttachments promove a 'ready' só o que ainda é pendente, do mesmo canal e do mesmo usuário, e aponta o anexo
+// para a chave final (cópia imutável, ver finalSuffix). Devolve as chaves finais dos que promoveu.
+func (s *store) bindAttachments(ctx context.Context, q querier, user, channel, message int64, ids []int64) ([]string, error) {
+	rows, err := q.Query(ctx,
+		`UPDATE attachments SET status = 'ready', message_id = $1, object_key = object_key || $5
+		 WHERE id = ANY($2) AND status = 'pending' AND channel_id = $3 AND uploader_id = $4 RETURNING object_key`,
+		message, ids, channel, user, finalSuffix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
 }
 
 func (s *store) objectKeysOfMessage(ctx context.Context, q querier, message int64) ([]string, error) {

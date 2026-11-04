@@ -32,6 +32,9 @@ type Store interface {
 	PresignGet(ctx context.Context, key string, opt GetOptions, ttl time.Duration) (string, error)
 	// Stat devolve o tamanho do objeto, ou ErrNotFound.
 	Stat(ctx context.Context, key string) (Info, error)
+	// Copy copia src para dst dentro do storage (server-side, atômico: dst nasce com o conteúdo de src naquele instante e
+	// sobrescreve o que houver). ErrNotFound se src não existe.
+	Copy(ctx context.Context, src, dst string) error
 	// Delete remove o objeto; apagar o que não existe não é erro (os jobs de limpeza são idempotentes).
 	Delete(ctx context.Context, key string) error
 }

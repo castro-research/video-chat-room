@@ -126,6 +126,16 @@ func (s *S3) Stat(ctx context.Context, key string) (Info, error) {
 	return Info{Size: st.Size, ContentType: st.ContentType}, nil
 }
 
+func (s *S3) Copy(ctx context.Context, src, dst string) error {
+	_, err := s.cli.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: s.bucket, Object: dst},
+		minio.CopySrcOptions{Bucket: s.bucket, Object: src})
+	if err != nil && minio.ToErrorResponse(err).Code == "NoSuchKey" {
+		return ErrNotFound
+	}
+	return err
+}
+
 func (s *S3) Delete(ctx context.Context, key string) error {
 	return s.cli.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
