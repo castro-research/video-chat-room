@@ -58,7 +58,11 @@ Events are filtered by the server, per user, at delivery time:
 - Guild events (`guild.update`, `guild.delete`, `member.*`, `role.*`, `channel.delete`) reach every member of the guild.
 - `guild.create` reaches only the user who created the guild.
 - A permission change (role, member roles, overrides, ownership) takes effect for the next event, on every server replica, within 1 s.
-  A client that lost access to a channel is not told: on `role.*`, `member.update` and `channel.permissions` it should refetch the channel list.
+  A client that lost access to a channel because of a `channel.permissions` or `channel.update` event receives a **tombstone**:
+  a `channel.delete` `{ id, guildId }` for that channel (it carries no name or override, so nothing leaks). Treat it as "remove the channel
+  from the list"; if access returns later, a `channel.permissions` arrives and the channel is refetched. Users who already could not see the channel
+  get nothing. When access is lost through `role.*` or `member.update` there is no per-channel event: on those, and on `channel.permissions`,
+  refetch the channel list.
 
 ## Events (`t` and `d`)
 

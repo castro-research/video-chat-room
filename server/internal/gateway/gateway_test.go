@@ -245,6 +245,7 @@ const (
 	channelX = int64(2000)
 	alice    = int64(1)
 	bob      = int64(2)
+	carol    = int64(3)
 )
 
 func standardDir() *fakeDir {
@@ -377,7 +378,40 @@ func TestFanOutFiltersByPermissionAndInvalidatesCache(t *testing.T) {
 	e.publish(t, bus.MessageCreate, guildA, channelX, map[string]any{"id": "4", "author": map[string]any{"id": "1"}})
 	ca.dispatch(bus.ChannelPermissions)
 	ca.dispatch(bus.MessageCreate)
-	cb.quiet() // channel.permissions é do canal: bob não o vê mais; a mensagem 4 também não
+	cb.dispatch(bus.ChannelDelete) // bob não vê mais o canal: só o tombstone chega
+	cb.quiet()                     // nem a mensagem 4
+}
+
+// Quem perde ViewChannel recebe um tombstone channel.delete (e só ele); quem já não via, nada.
+func TestLosingViewChannelGetsTombstone(t *testing.T) {
+	pool := dbtest.New(t)
+	dir := standardDir()
+	dir.setView(carol, channelX, false)
+	dir.guilds[carol] = []Guild{{ID: guildA, Name: "Casa", OwnerID: alice}}
+	e := newEnv(t, pool, 1, Config{}, dir)
+	listening(t, pool, 1)
+	ca, _ := open(t, e, alice)
+	cb, _ := open(t, e, bob)
+	cc, _ := open(t, e, carol)
+
+	// popula o cache: bob vê, carol não
+	e.publish(t, bus.MessageCreate, guildA, channelX, map[string]any{"id": "1", "author": map[string]any{"id": "1"}})
+	ca.dispatch(bus.MessageCreate)
+	cb.dispatch(bus.MessageCreate)
+	cc.quiet()
+
+	// bob perde o acesso no banco; o evento de override chega
+	dir.setView(bob, channelX, false)
+	e.publish(t, bus.ChannelPermissions, guildA, channelX, map[string]any{"channelId": "2000", "guildId": "1000"})
+	ca.dispatch(bus.ChannelPermissions)
+	f := cb.dispatch(bus.ChannelDelete)
+	var d map[string]string
+	if err := json.Unmarshal(f.D, &d); err != nil || d["id"] != "2000" || d["guildId"] != "1000" {
+		t.Fatalf("tombstone = %s", f.D)
+	}
+	cb.quiet()
+	// carol (cache dizia "não" e a mensagem 1 a consultou) não recebe nada
+	cc.quiet()
 }
 
 func TestGuildEventsTargetMembersAndTrackMembership(t *testing.T) {
@@ -580,6 +614,7 @@ func TestTwoGatewayNodes(t *testing.T) {
 	dirB.setView(bob, channelX, false)
 	a.publish(t, bus.ChannelPermissions, guildA, channelX, map[string]any{"channelId": "2000"})
 	ca.dispatch(bus.ChannelPermissions)
+	cb.dispatch(bus.ChannelDelete) // tombstone: bob perdeu o canal
 	b.publish(t, bus.MessageCreate, guildA, channelX, map[string]any{"id": "2", "author": map[string]any{"id": "1"}})
 	ca.dispatch(bus.MessageCreate)
 	cb.quiet()

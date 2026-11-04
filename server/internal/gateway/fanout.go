@@ -22,6 +22,13 @@ func channelScoped(e bus.Event) bool {
 	return true
 }
 
+// hidesOnLoss: eventos de canal que mudam o que o usuário vê. Quem não vê o canal depois do evento (e podia ver antes,
+// ou não se sabe) recebe um tombstone `channel.delete` {id, guildId}: o cliente já trata isso como "tire o canal da lista",
+// sem precisar de ViewChannel nem de refetch. Quem sabidamente já não via o canal não recebe nada.
+func hidesOnLoss(e bus.Event) bool {
+	return e.ChannelID != 0 && (e.Type == bus.ChannelPermissions || e.Type == bus.ChannelUpdate)
+}
+
 type routeMeta struct {
 	UserID string `json:"userId"`
 	Nonce  string `json:"nonce"`
@@ -37,10 +44,21 @@ func (g *Gateway) route(ctx context.Context, e bus.Event) {
 	_ = json.Unmarshal(e.Payload, &meta)
 	subject, _ := ids.Parse(meta.UserID)
 
+	sessions := g.snapshot()
+
+	// O que o cache sabia antes da invalidação diz quem já não via o canal (esses não precisam de tombstone).
+	var hiddenBefore map[int64]bool
+	if hidesOnLoss(e) {
+		hiddenBefore = map[int64]bool{}
+		for _, s := range sessions {
+			if ok, hit := g.cache.get(e.GuildID, s.userID, e.ChannelID); hit && !ok {
+				hiddenBefore[s.userID] = true
+			}
+		}
+	}
 	if bus.InvalidatesPermissions(e.Type) {
 		g.cache.invalidateGuild(e.GuildID)
 	}
-	sessions := g.snapshot()
 
 	// Membership da sessão: quem entra na guild passa a receber os eventos dela antes do próprio evento.
 	switch e.Type {
@@ -85,6 +103,9 @@ func (g *Gateway) route(ctx context.Context, e bus.Event) {
 				verdict[s.userID] = ok
 			}
 			if !ok {
+				if hiddenBefore != nil && !hiddenBefore[s.userID] {
+					g.send(s, bus.ChannelDelete, tombstone(e))
+				}
 				continue
 			}
 		}
@@ -107,6 +128,11 @@ func (g *Gateway) route(ctx context.Context, e bus.Event) {
 			}
 		}
 	}
+}
+
+func tombstone(e bus.Event) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"id": ids.Format(e.ChannelID), "guildId": ids.Format(e.GuildID)})
+	return b
 }
 
 func (g *Gateway) send(s *session, typ string, d json.RawMessage) {

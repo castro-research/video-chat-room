@@ -187,7 +187,10 @@ func TestGatewayPermissionFilteringE2E(t *testing.T) {
 	ov := "/v1/channels/" + secret + "/overrides/role/" + gid
 	alice.do("PUT", ov, 200, map[string]any{"deny": perm(permissions.ViewChannel)})
 	ca.event("channel.permissions")
-	cb.quiet() // bob acabou de perder a visão do canal
+	// bob acabou de perder a visão do canal: recebe o tombstone (channel.delete) em vez do evento de permissão
+	if tomb := cb.event("channel.delete"); tomb["id"] != secret || tomb["guildId"] != gid {
+		t.Fatalf("tombstone = %v", tomb)
+	}
 	geral := channelNamed(alice, gid, "geral")["id"].(string)
 	say := func(ch, text string) {
 		alice.do("POST", "/v1/channels/"+ch+"/messages", 201, map[string]any{"text": text})
@@ -216,6 +219,7 @@ func TestGatewayPermissionFilteringE2E(t *testing.T) {
 	// revoga de novo
 	alice.do("PUT", ov, 200, map[string]any{"deny": perm(permissions.ViewChannel)})
 	ca.event("channel.permissions")
+	cb.event("channel.delete") // tombstone de novo
 	say(secret, "de novo escondida")
 	ca.event("message.create")
 	cb.quiet()
