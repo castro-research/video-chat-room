@@ -233,7 +233,14 @@ struct E2ETests {
         #expect(await api.sessions.refreshRequests == 1)
         _ = try await api.me() // o token novo funciona
 
-        // Reuso do refresh antigo (rotativo): o servidor recusa e a UI é avisada
+        // Dentro da janela de graça (10 s) reapresentar o refresh antigo é um retry com resposta perdida:
+        // o servidor reemite um sucessor em vez de derrubar a sessão
+        try store.save(StoredTokens(accessToken: "velho", refreshToken: first.refreshToken, expiresAt: Date().addingTimeInterval(-5)), for: api.baseURL)
+        _ = try await api.me()
+        #expect(api.authState != .unauthenticated(.sessionExpired))
+
+        // Fora da janela é reuso de verdade (token roubado?): o servidor revoga a família e a UI é avisada
+        try await Task.sleep(nanoseconds: 11_000_000_000)
         try store.save(StoredTokens(accessToken: "velho", refreshToken: first.refreshToken, expiresAt: Date().addingTimeInterval(-5)), for: api.baseURL)
         do { _ = try await api.me(); Issue.record("devia falhar") }
         catch let e as KurzError { #expect(e.isUnauthenticated, "\(e)") }
