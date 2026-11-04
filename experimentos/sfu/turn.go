@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-// Cópia idêntica em manager/turn.go e sfu/turn.go (módulos separados).
-
 type iceServer struct {
 	URLs       []string `json:"urls"`
 	Username   string   `json:"username,omitempty"`

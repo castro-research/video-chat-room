@@ -8,7 +8,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Formato do token de mídia: o MESMO do manager de experimentos/manager (e validado por experimentos/sfu/sfu.go):
+// Formato do token de mídia: o do antigo manager, validado por experimentos/sfu/sfu.go:
 // JWT HS256, iss="kurz-manager", sub=id do usuário, name, room=id do canal de voz, jti aleatório, exp = agora + 60 s.
 // O SFU rejeita assinatura inválida, expirado ou jti já usado (guarda os jtis até o exp, em memória): uso único.
 // O claim extra `speak` é informativo: o SFU atual ignora claims que não conhece e NÃO impede ninguém de publicar
