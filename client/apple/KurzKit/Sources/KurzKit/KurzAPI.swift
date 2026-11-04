@@ -7,11 +7,15 @@ public final class KurzAPI: Sendable {
     public let sessions: SessionManager
     let http: HTTPClient
 
-    public init(baseURL: String, store: TokenStore = KeychainTokenStore(), session: URLSession = .shared) {
+    public convenience init(baseURL: String, store: TokenStore = KeychainTokenStore(), session: URLSession = .shared) {
+        self.init(baseURL: baseURL, store: store, session: session, refreshRetryDelay: 1)
+    }
+
+    init(baseURL: String, store: TokenStore, session: URLSession, refreshRetryDelay: TimeInterval) {
         let http = HTTPClient(baseURL: baseURL, session: session)
         self.http = http
         self.baseURL = http.baseURL
-        self.sessions = SessionManager(http: http, store: store)
+        self.sessions = SessionManager(http: http, store: store, retryDelay: refreshRetryDelay)
     }
 
     // MARK: Estado de autenticação

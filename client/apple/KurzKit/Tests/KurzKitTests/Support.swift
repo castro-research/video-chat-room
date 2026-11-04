@@ -88,7 +88,7 @@ struct MockServer {
         MockURLProtocol.register(host: host, handler)
     }
 
-    func api() -> KurzAPI { KurzAPI(baseURL: base, store: store, session: session) }
+    func api() -> KurzAPI { KurzAPI(baseURL: base, store: store, session: session, refreshRetryDelay: 0.05) }
 
     func seed(access: String = "A0", refresh: String = "R0", expiresIn: TimeInterval = 900) {
         try? store.save(StoredTokens(accessToken: access, refreshToken: refresh, expiresAt: Date().addingTimeInterval(expiresIn)), for: base)

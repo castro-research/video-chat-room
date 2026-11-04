@@ -28,9 +28,11 @@ public actor SessionManager {
     private var refreshTask: Task<String, Error>?
     private let states: Broadcaster<AuthState>
     private var refreshCount = 0
+    /// Espera antes de repetir um refresh recusado com 401 (ver `performRefresh`).
+    private let retryDelay: TimeInterval
 
-    init(http: HTTPClient, store: TokenStore, leeway: TimeInterval = 30, now: @escaping @Sendable () -> Date = { Date() }) {
-        self.http = http; self.store = store; self.baseKey = http.baseURL; self.leeway = leeway; self.now = now
+    init(http: HTTPClient, store: TokenStore, leeway: TimeInterval = 30, retryDelay: TimeInterval = 1, now: @escaping @Sendable () -> Date = { Date() }) {
+        self.http = http; self.store = store; self.baseKey = http.baseURL; self.leeway = leeway; self.now = now; self.retryDelay = retryDelay
         self.states = Broadcaster(initial: .unknown)
     }
 
@@ -102,13 +104,17 @@ public actor SessionManager {
     }
 
     private func performRefresh(_ refreshToken: String) async throws -> String {
-        refreshCount += 1
         do {
-            let body = try JSONEncoder().encode(["refreshToken": refreshToken])
-            let data = try await http.send("POST", "/v1/auth/refresh", body: body)
-            guard let s = try? KurzJSON.decoder().decode(Session.self, from: data) else { throw KurzError.decoding }
-            try establish(s)
-            return s.accessToken
+            do {
+                return try await requestRefresh(refreshToken)
+            } catch let e as KurzError where e.status == 401 {
+                // A rotação não é segura para retry: se a resposta com o token novo se perdeu, o servidor já gastou este. Ele tolera a
+                // repetição durante uma janela curta, por isso tenta UMA vez mais, se o token guardado ainda é o mesmo que foi enviado.
+                try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
+                guard let cur = try? store.load(for: baseKey) else { throw e }
+                if cur.refreshToken != refreshToken { return cur.accessToken }  // outro caminho (novo login) já renovou
+                return try await requestRefresh(refreshToken)
+            }
         } catch let e as KurzError where (400..<500).contains(e.status) && e.status != 429 {
             // Refresh recusado de vez (expirado, revogado, reutilizado): a sessão acabou.
             try? store.clear(for: baseKey)
@@ -116,5 +122,14 @@ public actor SessionManager {
             throw KurzError("Sessão expirada. Entra novamente.", code: e.code, status: e.status, serverMessage: e.serverMessage)
         }
         // Rede fora ou 5xx/429: mantém os tokens, o chamador pode tentar depois.
+    }
+
+    private func requestRefresh(_ refreshToken: String) async throws -> String {
+        refreshCount += 1
+        let body = try JSONEncoder().encode(["refreshToken": refreshToken])
+        let data = try await http.send("POST", "/v1/auth/refresh", body: body)
+        guard let s = try? KurzJSON.decoder().decode(Session.self, from: data) else { throw KurzError.decoding }
+        try establish(s)
+        return s.accessToken
     }
 }

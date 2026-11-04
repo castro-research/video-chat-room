@@ -82,6 +82,67 @@ struct SessionTests {
         catch let e as KurzError { #expect(e.code == "unauthenticated") }
     }
 
+    @Test func refresh401NaPrimeiraTentativaRepeteUmaVezEConsegue() async throws {
+        let refreshes = Counter()
+        let srv = MockServer { r in
+            if r.path == "/v1/auth/refresh" {
+                // a primeira resposta "perdeu-se": o servidor já gastou R0 e tolera a repetição na janela de graça
+                return refreshes.hit(r) == 1 ? .error(401, "unauthorized", "reuso") : .json(200, Sample.session(access: "A1", refresh: "R1"))
+            }
+            return r.bearer == "A1" ? .json(200, Sample.user) : .error(401, "token_expired")
+        }
+        srv.seed()
+        let api = srv.api()
+        _ = try await api.me()
+        #expect(refreshes.count == 2)
+        #expect(refreshes.requests.allSatisfy { $0.bodyJSON?["refreshToken"] as? String == "R0" })
+        #expect(try srv.store.load(for: srv.base)?.refreshToken == "R1")
+        #expect(api.authState != .unauthenticated(.sessionExpired))
+    }
+
+    @Test func refresh401DuasVezesExpiraASessaoAposUmUnicoRetry() async throws {
+        let refreshes = Counter()
+        let srv = MockServer { r in
+            if r.path == "/v1/auth/refresh" { refreshes.hit(r); return .error(401, "unauthorized", "reuso") }
+            return .error(401, "token_expired")
+        }
+        srv.seed()
+        let api = srv.api()
+        do { _ = try await api.me(); Issue.record("devia falhar") } catch let e as KurzError { #expect(e.isUnauthenticated) }
+        #expect(refreshes.count == 2)
+        #expect(try srv.store.load(for: srv.base) == nil)
+        #expect(api.authState == .unauthenticated(.sessionExpired))
+    }
+
+    @Test func refreshRecusadoCom400NaoRepete() async throws {
+        let refreshes = Counter()
+        let srv = MockServer { r in
+            if r.path == "/v1/auth/refresh" { refreshes.hit(r); return .error(400, "invalid_request") }
+            return .error(401, "token_expired")
+        }
+        srv.seed()
+        _ = try? await srv.api().me()
+        #expect(refreshes.count == 1)
+        #expect(try srv.store.load(for: srv.base) == nil)
+    }
+
+    @Test func retryDoRefreshContinuaSingleFlight() async throws {
+        let refreshes = Counter()
+        let srv = MockServer { r in
+            if r.path == "/v1/auth/refresh" {
+                return refreshes.hit(r) == 1 ? .error(401, "unauthorized", "reuso", headers: [:]) : .json(200, Sample.session(access: "A1", refresh: "R1"), delay: 0.1)
+            }
+            return r.bearer == "A1" ? .json(200, Sample.user) : .error(401, "token_expired")
+        }
+        srv.seed()
+        let api = srv.api()
+        try await withThrowingTaskGroup(of: Void.self) { g in
+            for _ in 0..<10 { g.addTask { _ = try await api.me() } }
+            try await g.waitForAll()
+        }
+        #expect(refreshes.count == 2)  // 1 recusado + 1 repetição, para as 10 chamadas
+    }
+
     @Test func refreshComRedeForaMantemOsTokens() async throws {
         let srv = MockServer { r in
             r.path == "/v1/auth/refresh" ? MockResponse(transportError: URLError(.notConnectedToInternet)) : .error(401, "token_expired")
@@ -94,11 +155,16 @@ struct SessionTests {
         #expect(api.authState != .unauthenticated(.sessionExpired))
     }
 
-    @Test func refreshCom5xxMantemOsTokens() async throws {
-        let srv = MockServer { r in r.path == "/v1/auth/refresh" ? .error(503, "x") : .error(401, "token_expired") }
+    @Test func refreshCom5xxMantemOsTokensESemRetry() async throws {
+        let refreshes = Counter()
+        let srv = MockServer { r in
+            if r.path == "/v1/auth/refresh" { refreshes.hit(r); return .error(503, "x") }
+            return .error(401, "token_expired")
+        }
         srv.seed()
         _ = try? await srv.api().me()
         #expect(try srv.store.load(for: srv.base)?.refreshToken == "R0")
+        #expect(refreshes.count == 1)
     }
 
     @Test func umUnicoRetryEmCasoDe401Persistente() async throws {
