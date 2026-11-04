@@ -6,7 +6,7 @@
 #   PUBLIC_IP               IP pelo qual o CLIENTE alcança o nó (padrão: IP da LAN)
 #   KURZ_SFU_URL            ws(s):// do /v1/media do SFU; atrás de um proxy/túnel: wss://<host>/v1/media (padrão: ws://$PUBLIC_IP:30081/v1/media)
 #   KURZ_S3_PUBLIC_ENDPOINT host:porta do S3 como o CLIENTE alcança (padrão: $PUBLIC_IP:30083)
-#   KURZ_DATA_DIR           onde ficam os dados (postgres/ e seaweedfs/) em bind mounts (padrão: /mnt/ssd/@docker/kurz)
+#   KURZ_DATA_DIR           onde ficam os dados (postgres/ e seaweedfs/) em bind mounts (padrão: /mnt/ssd/@docker/concordia)
 #   KURZ_TRUSTED_PROXY      true só se todo acesso passar por um proxy que sobrescreve o X-Forwarded-For
 set -eu
 cd "$(dirname "$0")"
@@ -17,7 +17,7 @@ PUBLIC_IP="${PUBLIC_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifad
 KURZ_SFU_URL="${KURZ_SFU_URL:-ws://$PUBLIC_IP:30081/v1/media}"
 KURZ_S3_PUBLIC_ENDPOINT="${KURZ_S3_PUBLIC_ENDPOINT:-$PUBLIC_IP:30083}"
 KURZ_IMAGE="${KURZ_IMAGE:-kurz/server:latest}"
-KURZ_DATA_DIR="${KURZ_DATA_DIR:-/mnt/ssd/@docker/kurz}"
+KURZ_DATA_DIR="${KURZ_DATA_DIR:-/mnt/ssd/@docker/concordia}"
 export KURZ_SFU_URL KURZ_S3_PUBLIC_ENDPOINT KURZ_IMAGE KURZ_DATA_DIR
 # o Swarm não cria a origem de um bind mount
 mkdir -p "$KURZ_DATA_DIR/postgres" "$KURZ_DATA_DIR/seaweedfs"

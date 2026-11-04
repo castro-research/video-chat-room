@@ -1,7 +1,7 @@
 # Stack Docker Swarm (nó único) do monólito Kurz: kurz + Postgres 18 + SeaweedFS (S3 dos anexos).
 # Sobe com ./deploy.sh, que gera os segredos em .env (uma vez), builda a imagem e define as variáveis abaixo.
 # Portas publicadas: 30082 (API + WebSocket) e 30083 (S3, que o CLIENTE acessa direto nas URLs pré-assinadas).
-# Dados em bind mounts sob $KURZ_DATA_DIR (padrão /mnt/ssd/@docker/kurz, como as outras stacks do pizito): postgres/ e seaweedfs/.
+# Dados em bind mounts sob $KURZ_DATA_DIR (padrão /mnt/ssd/@docker/concordia, como as outras stacks do pizito): postgres/ e seaweedfs/.
 # O Swarm não cria o diretório de origem de um bind mount; o deploy.sh faz o mkdir -p antes.
 services:
   kurz:
@@ -38,7 +38,7 @@ services:
       POSTGRES_DB: kurz
     volumes:
       # PG18+: PGDATA em /var/lib/postgresql/18/docker
-      - { type: bind, source: "${KURZ_DATA_DIR:-/mnt/ssd/@docker/kurz}/postgres", target: /var/lib/postgresql }
+      - { type: bind, source: "${KURZ_DATA_DIR:-/mnt/ssd/@docker/concordia}/postgres", target: /var/lib/postgresql }
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kurz"]
       interval: 5s
@@ -52,7 +52,7 @@ services:
     ports:
       - "30083:8333"
     volumes:
-      - { type: bind, source: "${KURZ_DATA_DIR:-/mnt/ssd/@docker/kurz}/seaweedfs", target: /data }
+      - { type: bind, source: "${KURZ_DATA_DIR:-/mnt/ssd/@docker/concordia}/seaweedfs", target: /data }
     configs:
       - source: s3json
         target: /etc/seaweedfs/s3.json
