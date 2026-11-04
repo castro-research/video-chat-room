@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -183,7 +182,7 @@ func NewApp(cfg config.Config, pool *pgxpool.Pool, opts ...Option) *App {
 			Write:      ratelimit.New(rl.WritePerSec, rl.WriteBurst, nil),
 			TrustProxy: cfg.TrustedProxy,
 			User: func(r *http.Request) (int64, bool) {
-				tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+				tok, ok := identity.BearerToken(r.Header.Get("Authorization"))
 				if !ok {
 					return 0, false
 				}

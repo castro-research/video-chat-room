@@ -12,7 +12,7 @@ import (
 func Require(tokens *TokenIssuer) func(httpx.Handler) httpx.Handler {
 	return func(next httpx.Handler) httpx.Handler {
 		return func(w http.ResponseWriter, r *http.Request) error {
-			raw, ok := bearerToken(r.Header.Get("Authorization"))
+			raw, ok := BearerToken(r.Header.Get("Authorization"))
 			if !ok {
 				return httpx.ErrUnauthorized
 			}
@@ -29,7 +29,9 @@ func Require(tokens *TokenIssuer) func(httpx.Handler) httpx.Handler {
 	}
 }
 
-func bearerToken(header string) (string, bool) {
+// BearerToken extrai o token de `Authorization: Bearer <token>` (esquema sem diferenciar maiúsculas, RFC 7235).
+// É a única leitura do cabeçalho: o rate limiter e o Require têm de concordar sobre quem é o usuário.
+func BearerToken(header string) (string, bool) {
 	scheme, raw, ok := strings.Cut(header, " ")
 	if !ok || !strings.EqualFold(scheme, "Bearer") {
 		return "", false

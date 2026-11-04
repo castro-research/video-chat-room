@@ -106,6 +106,24 @@ func TestRateLimitWritesPerUser(t *testing.T) {
 	bob.do("PATCH", "/v1/me", 200, map[string]any{"displayName": "Bob"}) // outro usuário, outro bucket
 }
 
+// O limitador lê o Authorization com a mesma função do Require: "bearer <jwt>" em minúsculas também cai no bucket do usuário
+// (e não no do IP, que clientes atrás do mesmo NAT dividiriam).
+func TestRateLimitUserBucketAcceptsLowercaseBearer(t *testing.T) {
+	srv := newOpsServer(t, func(c *config.Config) {
+		c.RateLimit = config.RateLimit{Enabled: true, AuthBurst: 100, AuthPerMin: 100, WriteBurst: 2, WritePerSec: 0.01}
+	})
+	alice, bob := newUser(t, srv.URL, "alice"), newUser(t, srv.URL, "bob")
+	patch := func(u *user) int {
+		return rawDo(t, "PATCH", srv.URL+"/v1/me", map[string]string{"Authorization": "bearer " + u.token}, `{"subtitle":"x"}`).StatusCode
+	}
+	if patch(alice) != 200 || patch(alice) != 200 || patch(alice) != 429 {
+		t.Fatal("alice must be limited by her own bucket")
+	}
+	if got := patch(bob); got != 200 {
+		t.Fatalf("bob shares alice's bucket (ip:) = %d", got)
+	}
+}
+
 func TestMetricsEndpoint(t *testing.T) {
 	srv := newOpsServer(t, func(c *config.Config) {})
 	alice := newUser(t, srv.URL, "alice")
